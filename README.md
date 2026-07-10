@@ -7,8 +7,8 @@ FareProof is a local-first airfare evidence and verification tool. The private C
 The loadable Manifest V3 extension now implements the browser workflow in [prompt.txt](prompt.txt) for the configured Matrix and BookWithMatrix path:
 
 - Five editable default policies for YVR→FRA, YVR→SKG/TIA, both 30–45-day round trips, and corresponding one-way returns. Defaults require two adults, at most CAD 1,600 per person, business/first on legs over six hours, and allow economy on shorter legs. The FRA policies restrict connections to Canada where a connection exists.
-- A five-minute central scheduler with one durable owned tab, timeout recovery, rotating date cursors, and no concurrent tab fan-out. Each cycle checks one date per Matrix 30-day flexible-calendar window for every due policy; **Check now** runs a selected policy visibly.
-- Verified Matrix flexible-date URLs using the browser-generated base64 search contract; calendar and flight-result capture; candidate selection under the per-person limit; interception and Zod validation of Matrix's own **Copy itinerary as JSON** output.
+- A five-minute central scheduler with one durable owned tab, timeout recovery, rotating date cursors, and no concurrent tab fan-out. Each cycle checks one date per Matrix 30-day flexible-calendar window for every due policy; **Check now** runs a selected policy visibly. If Matrix remains on its spinner, FareProof waits 60 seconds, retries once with a fresh Matrix session, then marks Matrix unavailable and waits for the next policy interval.
+- Visible Matrix flexible-date form submission through semantic controls, with the browser-generated base64 URL retained for diagnostics; calendar and flight-result capture; candidate selection under the per-person limit; interception and Zod validation of Matrix's own **Copy itinerary as JSON** output.
 - Deterministic validation of route, travel date, passenger count, original-currency per-person price, per-direction stops, connection country, segment duration, mixed cabin, and 30–45-day return window.
 - BookWithMatrix handoff through its visible paste workflow, independent retailer links, and fixture-backed observation on its supported retailer hosts.
 - Conservative retailer validation. A high-confidence notification requires the retailer page to reproduce route, travel date, flight identity, long-leg cabin tied to the long-haul flight, and original-currency price at or below the policy limit. Missing evidence becomes **manual verification required**, not a match.
@@ -18,6 +18,8 @@ The loadable Manifest V3 extension now implements the browser workflow in [promp
 - Unit and fixture coverage for the supplied `WS 5943 / DE 2455`, `D`, `DZ0D0HNS`, `CAD 1,313.67` fare, Matrix calendar/results, BookWithMatrix links, retailer evidence, mixed-cabin policy rules, and an unpacked-extension Playwright test covering the complete Matrix → BookWithMatrix → retailer chain.
 
 Scheduled checks require Chrome and the extension service worker to run. Retailer pages change and may require interaction, login, consent, or CAPTCHA; FareProof reports those states and never bypasses them. The current generic retailer adapter validates visible search/result evidence but does not submit passenger data or advance into payment. IndexedDB evidence history, screenshots, sound, and site-specific checkout-stage adapters remain future work.
+
+Matrix currently logs `ERROR Object` from Google's bundled script when its internal unauthenticated user-info probe returns 401. FareProof does not generate or suppress that console line. When Matrix's fare search also stalls, the Matrix tab shows a FareProof waiting/retry overlay and the policy status records the bounded failure instead of treating it as a match.
 
 ## Architecture
 

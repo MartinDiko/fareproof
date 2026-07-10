@@ -46,3 +46,9 @@ description: FareProof decisions and user-confirmed implementation patterns.
 - **Rule:** Gate the static Pages dashboard in memory with port's PBKDF2-SHA-256/AES-GCM verifier and the same password; never persist the password or unlocked plaintext. Lock again on reload and state plainly that this is client-side obfuscation, not server authentication.
 - **Why:** The lightweight gate keeps casual access consistent across Martin's private dashboards without adding a backend or overstating what static-site JavaScript can secure.
 - **Reference:** `packages/web/src/auth.ts`, `packages/web/src/Login.tsx`, and `packages/web/scripts/encrypt-access.mjs`.
+
+## Matrix failures are bounded and explicit
+- **Confirmed:** 2026-07-10 — Martin reported Check now leaving Matrix on a spinner with `ERROR Object` in Google's bundled script.
+- **Rule:** Treat Matrix's console `ERROR Object` as site-generated, not a FareProof exception. Initialize Matrix at `/search`, wait at most 60 seconds for calendar data, retry once with a fresh Matrix session, then stop the cycle and mark every affected policy as Matrix unavailable with its next retry time; never leave an owned tab spinning indefinitely or repeat every task during a site-wide failure.
+- **Why:** Matrix can return HTTP 200 for its shell while its internal content RPC fails, including an unauthenticated user-info probe; bounded recovery makes the scheduler truthful and prevents one upstream outage from consuming an entire cycle.
+- **Reference:** `retryMatrixCalendar` and `failMatrixRun` in `packages/extension/src/background/serviceWorker.ts`; `tests/e2e/extension-live.spec.ts`.

@@ -46,6 +46,8 @@ export const extensionMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('RUN_POLICIES_NOW'), policyIds: z.array(z.string()).optional() }),
   z.object({ type: z.literal('SAVE_NOTIFICATION_SETTINGS'), browserEnabled: z.boolean(), ntfyTopic: z.string().optional() }),
   z.object({ type: z.literal('TEST_NOTIFICATION') }),
+  z.object({ type: z.literal('MATRIX_HOME_READY') }),
+  z.object({ type: z.literal('MATRIX_FORM_FAILED'), reason: z.string().max(500) }),
   z.object({ type: z.literal('MATRIX_CALENDAR'), entries: z.array(calendarEntrySchema) }),
   z.object({ type: z.literal('MATRIX_FLIGHTS'), candidates: z.array(matrixFlightCandidateSchema) }),
   z.object({ type: z.literal('MATRIX_ITINERARY_READY') }),
@@ -57,6 +59,11 @@ export const extensionMessageSchema = z.discriminatedUnion('type', [
 ]);
 
 export const contentCommandSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('RUN_MATRIX_SEARCH'),
+    task: z.object({ id: z.string(), policyId: z.string(), startDate: z.string(), latestDate: z.string(), url: z.string().url() }),
+    policy: fareSearchPolicySchema,
+  }),
   z.object({ type: z.literal('SELECT_MATRIX_DATE'), date: z.string() }),
   z.object({ type: z.literal('CAPTURE_MATRIX_JSON') }),
   z.object({ type: z.literal('SUBMIT_BOOKWITHMATRIX'), rawJson: z.string().max(512_000) }),

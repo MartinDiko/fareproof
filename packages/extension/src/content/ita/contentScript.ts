@@ -2,6 +2,7 @@ import { parseMatrixItineraryJson, type ObservedItinerary } from '@fareproof/cor
 import { contentCommandSchema } from '../../shared/messages';
 import { observeStablePage } from '../shared/pageObserver';
 import { clickMatrixCalendarDate, extractMatrixCalendar, extractMatrixFlights } from './extraction';
+import { submitMatrixSearch } from './formAutomation';
 
 let lastPublished = '';
 let latestItinerary: ObservedItinerary | null = null;
@@ -18,6 +19,7 @@ function renderOverlay(itinerary: ObservedItinerary): void {
   overlayHost?.remove();
   overlayHost = document.createElement('div');
   overlayHost.id = 'fareproof-overlay-host';
+  overlayHost.dataset.status = 'captured';
   const shadow = overlayHost.attachShadow({ mode: 'closed' });
   const panel = document.createElement('aside');
   panel.setAttribute('style', 'position:fixed;right:20px;bottom:20px;z-index:2147483647;width:260px;padding:14px;border:1px solid #dedede;border-radius:8px;background:#fff;color:#242424;font:14px Segoe UI,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.16)');
@@ -38,8 +40,40 @@ function renderOverlay(itinerary: ObservedItinerary): void {
   document.documentElement.append(overlayHost);
 }
 
+function renderLoadingOverlay(): void {
+  if (overlayHost?.dataset.status === 'matrix-loading') return;
+  overlayHost?.remove();
+  overlayHost = document.createElement('div');
+  overlayHost.id = 'fareproof-overlay-host';
+  overlayHost.dataset.status = 'matrix-loading';
+  const shadow = overlayHost.attachShadow({ mode: 'closed' });
+  const panel = document.createElement('aside');
+  panel.setAttribute('style', 'position:fixed;right:20px;bottom:20px;z-index:2147483647;width:260px;padding:14px;border:1px solid #dedede;border-radius:8px;background:#fff;color:#242424;font:14px Segoe UI,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.16)');
+  const title = document.createElement('strong');
+  title.textContent = 'FareProof · Waiting for Matrix';
+  const details = document.createElement('p');
+  details.textContent = 'Matrix is still loading fare data. FareProof will retry once after 60 seconds, then report the site unavailable.';
+  panel.append(title, details);
+  shadow.append(panel);
+  document.documentElement.append(overlayHost);
+}
+
+function clearLoadingOverlay(): void {
+  if (overlayHost?.dataset.status !== 'matrix-loading') return;
+  overlayHost.remove();
+  overlayHost = null;
+}
+
 function inspectPage(): void {
-  if (document.querySelector('[role=progressbar]')) return;
+  if (document.querySelector('[role=progressbar]')) {
+    if (location.pathname === '/calendar') renderLoadingOverlay();
+    return;
+  }
+  clearLoadingOverlay();
+  if (location.pathname === '/' || location.pathname === '/search') {
+    publish({ type: 'MATRIX_HOME_READY' });
+    return;
+  }
   if (location.pathname === '/calendar') {
     const entries = extractMatrixCalendar(document, location.href);
     if (entries.length) publish({ type: 'MATRIX_CALENDAR', entries });
@@ -57,6 +91,13 @@ function inspectPage(): void {
 chrome.runtime.onMessage.addListener((rawMessage: unknown, _sender, sendResponse) => {
   const parsed = contentCommandSchema.safeParse(rawMessage);
   if (!parsed.success) return false;
+  if (parsed.data.type === 'RUN_MATRIX_SEARCH') {
+    sendResponse({ ok: true });
+    void submitMatrixSearch(parsed.data.task, parsed.data.policy).catch((error: unknown) => {
+      void chrome.runtime.sendMessage({ type: 'MATRIX_FORM_FAILED', reason: error instanceof Error ? error.message : 'Matrix form automation failed.' });
+    });
+    return false;
+  }
   if (parsed.data.type === 'SELECT_MATRIX_DATE') {
     sendResponse({ ok: clickMatrixCalendarDate(document, parsed.data.date) });
   }

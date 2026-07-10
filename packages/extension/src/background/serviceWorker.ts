@@ -28,7 +28,8 @@ const CURRENT_OBSERVATION_KEY = 'fareproof.currentObservation';
 const DISPATCH_ALARM = 'fareproof.dispatch';
 const RUN_TIMEOUT_ALARM = 'fareproof.run-timeout';
 const RUN_TIMEOUT_BY_STAGE: Record<ActiveVerificationRun['stage'], number> = {
-  calendar: 120_000,
+  'matrix-home': 20_000,
+  calendar: 60_000,
   flights: 120_000,
   itinerary: 60_000,
   bookwithmatrix: 45_000,
@@ -137,7 +138,7 @@ async function startRun(policyIds?: string[], interactive = false): Promise<bool
   const first = tasks[0];
   if (!first) return false;
   for (const policy of selected) {
-    await updateStatus(policy.id, { state: 'running', lastAttemptAt: new Date().toISOString(), nextDueAt: nextDueAt(policy), message: 'Opening ITA Matrix flexible-date search.' });
+    await updateStatus(policy.id, { state: 'running', lastAttemptAt: new Date().toISOString(), nextDueAt: nextDueAt(policy), message: 'Initializing the ITA Matrix browser session.' });
   }
   const tab = await chrome.tabs.create({ url: 'about:blank', active: interactive });
   const now = new Date().toISOString();
@@ -149,7 +150,8 @@ async function startRun(policyIds?: string[], interactive = false): Promise<bool
     tasks,
     taskIndex: 0,
     tabId: tab.id,
-    stage: 'calendar',
+    stage: 'matrix-home',
+    stageAttempt: 0,
     dateQueue: [],
     dateIndex: 0,
     candidateQueue: [],
@@ -158,7 +160,7 @@ async function startRun(policyIds?: string[], interactive = false): Promise<bool
     retailerIndex: 0,
     policyIds: selected.map((policy) => policy.id),
   });
-  if (tab.id !== undefined) await chrome.tabs.update(tab.id, { url: first.url, active: interactive });
+  if (tab.id !== undefined) await chrome.tabs.update(tab.id, { url: 'https://matrix.itasoftware.com/search', active: interactive });
   return true;
 }
 
@@ -188,6 +190,38 @@ async function finishRun(run: ActiveVerificationRun): Promise<void> {
   await saveRun(null);
 }
 
+async function failMatrixRun(run: ActiveVerificationRun, message: string): Promise<void> {
+  const policies = await getPolicies();
+  for (const policyId of run.policyIds) {
+    const policy = policies.find((item) => item.id === policyId);
+    if (!policy) continue;
+    await updateStatus(policy.id, {
+      state: 'error',
+      lastCompletedAt: new Date().toISOString(),
+      nextDueAt: nextDueAt(policy),
+      message,
+    });
+  }
+  if (!run.interactive && run.tabId !== undefined) await chrome.tabs.remove(run.tabId).catch(() => undefined);
+  await saveRun(null);
+}
+
+async function retryMatrixCalendar(run: ActiveVerificationRun): Promise<void> {
+  const task = run.tasks[run.taskIndex];
+  if (!task || run.tabId === undefined) {
+    await failMatrixRun(run, 'Matrix check could not be initialized. FareProof will retry at the next scheduled interval.');
+    return;
+  }
+  if (run.stageAttempt >= 1) {
+    await failMatrixRun(run, 'ITA Matrix did not return fare data after two attempts. The Matrix console ERROR Object is site-generated; FareProof will retry at the next scheduled interval.');
+    return;
+  }
+  const next = { ...run, stage: 'matrix-home' as const, stageAttempt: run.stageAttempt + 1 };
+  await saveRun(next);
+  await updateStatus(task.policyId, { state: 'running', message: 'Matrix did not return fare data; retrying once with a fresh browser session.' });
+  await chrome.tabs.update(run.tabId, { url: `https://matrix.itasoftware.com/search?fareproofRetry=${Date.now()}`, active: run.interactive });
+}
+
 async function advanceTask(run: ActiveVerificationRun, message: string, state: PolicyStatus['state'] = 'no-match'): Promise<void> {
   const policies = await getPolicies();
   const policy = policyForRun(run, policies);
@@ -204,11 +238,12 @@ async function advanceTask(run: ActiveVerificationRun, message: string, state: P
   const next: ActiveVerificationRun = {
     ...run,
     taskIndex,
-    stage: 'calendar',
+    stage: 'matrix-home',
     dateQueue: [],
     dateIndex: 0,
     candidateQueue: [],
     candidateIndex: 0,
+    stageAttempt: 0,
     matrixJson: undefined,
     matrixItinerary: undefined,
     bookWithMatrixUrl: undefined,
@@ -216,7 +251,7 @@ async function advanceTask(run: ActiveVerificationRun, message: string, state: P
     retailerIndex: 0,
   };
   await saveRun(next);
-  if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: nextTask.url, active: run.interactive });
+  if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: 'https://matrix.itasoftware.com/search', active: run.interactive });
 }
 
 async function advanceCandidate(run: ActiveVerificationRun, message: string): Promise<void> {
@@ -226,7 +261,7 @@ async function advanceCandidate(run: ActiveVerificationRun, message: string): Pr
     await advanceTask(run, message, 'no-match');
     return;
   }
-  const next = { ...run, candidateIndex, stage: 'itinerary' as const, matrixJson: undefined, matrixItinerary: undefined };
+  const next = { ...run, candidateIndex, stage: 'itinerary' as const, stageAttempt: 0, matrixJson: undefined, matrixItinerary: undefined };
   await saveRun(next);
   if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: candidate.url, active: run.interactive });
 }
@@ -245,7 +280,7 @@ async function advanceRetailer(run: ActiveVerificationRun, message: string): Pro
     await advanceTask(run, message, 'manual-action-required');
     return;
   }
-  const next = { ...run, retailerIndex, stage: 'retailer' as const };
+  const next = { ...run, retailerIndex, stage: 'retailer' as const, stageAttempt: 0 };
   await saveRun(next);
   if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: retailer.url, active: run.interactive });
 }
@@ -295,7 +330,7 @@ async function handleMatrixCalendar(message: Extract<ExtensionMessage, { type: '
   const cursor = await currentDateCursor(task.id);
   const selected = pool[cursor % pool.length]!;
   await incrementDateCursor(task.id, cursor + 1);
-  const next = { ...run, stage: 'flights' as const, dateQueue: [selected.date], dateIndex: 0 };
+  const next = { ...run, stage: 'flights' as const, stageAttempt: 0, dateQueue: [selected.date], dateIndex: 0 };
   await saveRun(next);
   if (run.tabId !== undefined) {
     const response = await chrome.tabs.sendMessage(run.tabId, { type: 'SELECT_MATRIX_DATE', date: selected.date }).catch(() => ({ ok: false }));
@@ -313,7 +348,7 @@ async function handleMatrixFlights(message: Extract<ExtensionMessage, { type: 'M
     await advanceTask(run, 'No ITA flight result met the per-person price limit.', 'no-match');
     return;
   }
-  const next = { ...run, stage: 'itinerary' as const, candidateQueue: candidates, candidateIndex: 0 };
+  const next = { ...run, stage: 'itinerary' as const, stageAttempt: 0, candidateQueue: candidates, candidateIndex: 0 };
   await saveRun(next);
   await updateStatus(policy.id, { state: 'candidate-found', message: `ITA candidate found at ${policy.currency} ${(first.priceMinor / 100).toFixed(2)} per person.` });
   if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: first.url, active: run.interactive });
@@ -341,7 +376,7 @@ async function handleMatrixItinerary(message: Extract<ExtensionMessage, { type: 
     await advanceCandidate(run, `ITA candidate failed: ${missingRules.join(', ')}.`);
     return;
   }
-  const next = { ...run, stage: 'bookwithmatrix' as const, matrixJson: message.rawJson, matrixItinerary: message.itinerary };
+  const next = { ...run, stage: 'bookwithmatrix' as const, stageAttempt: 0, matrixJson: message.rawJson, matrixItinerary: message.itinerary };
   await saveRun(next);
   await updateStatus(policy.id, { state: 'candidate-found', message: `ITA policy match at ${policy.currency} ${(price / 100).toFixed(2)} per person; checking BookWithMatrix.`, bestPricePerPersonMinor: price, bestUrl: message.itinerary.sourceUrl });
   if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: 'https://bookwithmatrix.com/', active: run.interactive });
@@ -365,7 +400,7 @@ async function handleBookWithMatrixResults(message: Extract<ExtensionMessage, { 
     await advanceRetailer({ ...run, bookWithMatrixUrl: message.resultUrl, retailerQueue: [], retailerIndex: 0 }, 'BookWithMatrix returned no supported retailer link.');
     return;
   }
-  const next = { ...run, stage: 'retailer' as const, bookWithMatrixUrl: message.resultUrl, retailerQueue: links, retailerIndex: 0 };
+  const next = { ...run, stage: 'retailer' as const, stageAttempt: 0, bookWithMatrixUrl: message.resultUrl, retailerQueue: links, retailerIndex: 0 };
   await saveRun(next);
   if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: first.url, active: run.interactive });
 }
@@ -448,7 +483,19 @@ async function handleMessage(message: ExtensionMessage, sender: chrome.runtime.M
   }
   const run = await getRun();
   if (!run || sender.tab?.id !== run.tabId) return { ok: false };
-  if (message.type === 'MATRIX_CALENDAR') await handleMatrixCalendar(message, run);
+  if (message.type === 'MATRIX_HOME_READY' && run.stage === 'matrix-home') {
+    const task = run.tasks[run.taskIndex];
+    if (!task || run.tabId === undefined) return { ok: false };
+    const policies = await getPolicies();
+    const policy = policies.find((item) => item.id === task.policyId);
+    if (!policy) return { ok: false };
+    const next = { ...run, stage: 'calendar' as const };
+    await saveRun(next);
+    await updateStatus(task.policyId, { state: 'running', message: 'Matrix initialized; submitting the flexible-date search.' });
+    await chrome.tabs.sendMessage(run.tabId, { type: 'RUN_MATRIX_SEARCH', task, policy });
+  }
+  else if (message.type === 'MATRIX_FORM_FAILED' && run.stage === 'calendar') await retryMatrixCalendar(run);
+  else if (message.type === 'MATRIX_CALENDAR') await handleMatrixCalendar(message, run);
   else if (message.type === 'MATRIX_FLIGHTS') await handleMatrixFlights(message, run);
   else if (message.type === 'MATRIX_ITINERARY_READY' && run.stage === 'itinerary' && run.tabId !== undefined) await chrome.scripting.executeScript({ target: { tabId: run.tabId }, world: 'MAIN', func: captureMatrixJsonInPage });
   else if (message.type === 'MATRIX_ITINERARY') await handleMatrixItinerary(message, run);
@@ -483,6 +530,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === RUN_TIMEOUT_ALARM) {
     void getRun().then((run) => {
       if (!run) return undefined;
+      if (run.stage === 'matrix-home' || run.stage === 'calendar') return retryMatrixCalendar(run);
       if (run.stage === 'itinerary') return advanceCandidate(run, 'Timed out while capturing the Matrix itinerary.');
       if (run.stage === 'retailer') return advanceRetailer(run, 'Retailer did not expose enough stable evidence before timeout.');
       if (run.stage === 'bookwithmatrix') return advanceRetailer({ ...run, retailerQueue: [], retailerIndex: 0 }, 'BookWithMatrix did not finish before timeout.');

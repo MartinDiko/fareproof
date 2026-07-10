@@ -68,7 +68,34 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
 
     let serviceWorker = context.serviceWorkers()[0];
     if (!serviceWorker) serviceWorker = await context.waitForEvent('serviceworker');
+    const serviceWorkerErrors: string[] = [];
+    serviceWorker.on('console', (message) => {
+      if (message.type() === 'error') serviceWorkerErrors.push(message.text());
+    });
     const extensionId = new URL(serviceWorker.url()).host;
+    await serviceWorker.evaluate(async () => {
+      const oldTimestamp = new Date(Date.now() - 10 * 60_000).toISOString();
+      await chrome.storage.local.set({
+        'fareproof.activeVerificationRun': {
+          id: 'stale-installed-run',
+          startedAt: oldTimestamp,
+          updatedAt: oldTimestamp,
+          interactive: true,
+          tasks: [{ id: 'fare-1-yvr-fra-one-way-0', policyId: 'fare-1-yvr-fra-one-way', startDate: '2026-09-01', latestDate: '2026-09-30', url: 'https://matrix.itasoftware.com/calendar?search=fixture' }],
+          taskIndex: 0,
+          tabId: 2_147_483_647,
+          stage: 'calendar',
+          stageAttempt: 0,
+          dateQueue: [],
+          dateIndex: 0,
+          candidateQueue: [],
+          candidateIndex: 0,
+          retailerQueue: [],
+          retailerIndex: 0,
+          policyIds: ['fare-1-yvr-fra-one-way'],
+        },
+      });
+    });
     const page = await context.newPage();
     const consoleErrors: string[] = [];
     page.on('console', (message) => {
@@ -77,6 +104,7 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
     await page.setViewportSize({ width: 420, height: 900 });
     await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     await expect(page.getByText('Fare 1 · YVR to FRA one way')).toBeVisible();
+    await expect.poll(async () => page.evaluate(async () => (await chrome.storage.local.get('fareproof.activeVerificationRun'))['fareproof.activeVerificationRun'])).toBeNull();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(420);
     await page.getByLabel('Fare JSON').fill(matrixFixture);
     await page.getByRole('button', { name: 'Parse and create watch' }).click();
@@ -84,6 +112,13 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
       const watches = (await chrome.storage.local.get('fareproof.watches'))['fareproof.watches'];
       return watches?.[0]?.criteria?.target?.segments?.[0];
     })).toMatchObject({ marketingCarrier: { code: 'WS' }, marketingFlightNumber: '5943', operatingCarrier: { code: 'DE' }, operatingFlightNumber: '2455' });
+    await page.evaluate(async () => {
+      const watches = (await chrome.storage.local.get('fareproof.watches'))['fareproof.watches'];
+      await chrome.storage.local.set({ 'fareproof.currentObservation': watches[0].criteria.target });
+    });
+    const evidencePanel = page.locator('.evidence-panel');
+    await expect(evidencePanel.locator('.evidence-stage')).toHaveText('ITA fare captured');
+    await expect(evidencePanel.locator('.booking-link')).toHaveCount(0);
     const optionsPage = await context.newPage();
     optionsPage.on('console', (message) => {
       if (message.type() === 'error') consoleErrors.push(message.text());
@@ -93,6 +128,7 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
     await expect(optionsPage.locator('.policy-editor')).toHaveCount(5);
     expect(await optionsPage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1280);
     const policy = page.locator('.policy-card').filter({ hasText: 'Fare 1 · YVR to FRA one way' });
+    await expect(policy.getByRole('button', { name: 'Check now' })).toBeEnabled();
     const verificationPagePromise = context.waitForEvent('page');
     await policy.getByRole('button', { name: 'Check now' }).click();
     const verificationPage = await verificationPagePromise;
@@ -110,6 +146,23 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
     }), { timeout: 45_000 }).toMatchObject({ state: 'retailer-match' });
     await expect(policy.getByText('retailer match')).toBeVisible();
     await expect(policy.getByText(/OneTravel reproduced the route, date, flight, cabin, and price/)).toBeVisible();
+    await expect(evidencePanel.locator('.evidence-stage')).toHaveText('Retailer validated');
+    await expect(evidencePanel.getByText('YVR → FRA', { exact: true })).toBeVisible();
+    await expect(evidencePanel.getByText('2026-09-17 · BUSINESS', { exact: true })).toBeVisible();
+    await expect(evidencePanel.getByText('Fare 1 · YVR to FRA one way', { exact: true })).toBeVisible();
+    await expect(evidencePanel.getByText(/1,318\.42/)).toBeVisible();
+    await expect(evidencePanel.getByText(/2,636\.84/)).toBeVisible();
+    await expect(evidencePanel.getByText(/WS 5943 operated by DE 2455/)).toBeVisible();
+    await expect(evidencePanel.getByText(/DZ0D0HNS/)).toBeVisible();
+    await expect(evidencePanel.getByText('OneTravel', { exact: true })).toBeVisible();
+    const confirmedRules = evidencePanel.locator('.evidence-rules.match');
+    await expect(confirmedRules).toContainText('retailer route');
+    await expect(confirmedRules).toContainText('retailer travel date');
+    await expect(confirmedRules).toContainText('retailer flight identity');
+    await expect(confirmedRules).toContainText('retailer long-leg cabin');
+    await expect(confirmedRules).toContainText('retailer price');
+    const bookingLink = evidencePanel.getByRole('link', { name: /Open booking site · OneTravel/ });
+    await expect(bookingLink).toHaveAttribute('href', /https:\/\/www\.onetravel\.com\//);
     const stored = await page.evaluate(async () => chrome.storage.local.get(['fareproof.policyObservations', 'fareproof.activeVerificationRun']));
     expect(stored['fareproof.policyObservations']).toEqual(expect.arrayContaining([expect.objectContaining({ policyId: 'fare-1-yvr-fra-one-way', stage: 'retailer-result-reproduced', retailer: 'OneTravel', pricePerPersonMinor: 131_842 })]));
     expect(stored['fareproof.activeVerificationRun']).toBeNull();
@@ -117,6 +170,42 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
     const notifications = await page.evaluate(async () => chrome.notifications.getAll());
     expect(notifications).toHaveProperty('fareproof-fare-1-yvr-fra-one-way');
     expect(consoleErrors).toEqual([]);
+
+    const scheduledPagePromise = context.waitForEvent('page');
+    await page.evaluate(async () => {
+      const oldTimestamp = new Date(Date.now() - 10 * 60_000).toISOString();
+      const result = await chrome.storage.local.get('fareproof.policyStatuses');
+      const statuses = (result['fareproof.policyStatuses'] ?? []).map((status: { policyId: string }) => ({
+        ...status,
+        nextDueAt: status.policyId === 'fare-1-yvr-fra-one-way' ? '1970-01-01T00:00:00.000Z' : '2999-01-01T00:00:00.000Z',
+      }));
+      await chrome.storage.local.set({
+        'fareproof.policyStatuses': statuses,
+        'fareproof.activeVerificationRun': {
+          id: 'stale-scheduled-run',
+          startedAt: oldTimestamp,
+          updatedAt: oldTimestamp,
+          interactive: false,
+          tasks: [{ id: 'fare-1-yvr-fra-one-way-0', policyId: 'fare-1-yvr-fra-one-way', startDate: '2026-09-01', latestDate: '2026-09-30', url: 'https://matrix.itasoftware.com/calendar?search=fixture' }],
+          taskIndex: 0,
+          tabId: 2_147_483_646,
+          stage: 'calendar',
+          stageAttempt: 0,
+          dateQueue: [],
+          dateIndex: 0,
+          candidateQueue: [],
+          candidateIndex: 0,
+          retailerQueue: [],
+          retailerIndex: 0,
+          policyIds: ['fare-1-yvr-fra-one-way'],
+        },
+      });
+      await chrome.alarms.create('fareproof.dispatch', { when: Date.now() + 100 });
+    });
+    const scheduledPage = await scheduledPagePromise;
+    await expect.poll(async () => page.evaluate(async () => (await chrome.storage.local.get('fareproof.activeVerificationRun'))['fareproof.activeVerificationRun']?.id)).not.toBe('stale-scheduled-run');
+    await scheduledPage.close();
+    expect(serviceWorkerErrors).toEqual([]);
   } finally {
     await context.close();
   }

@@ -41,6 +41,11 @@ const DEFAULT_NOTIFICATIONS: NotificationSettings = { browserEnabled: true };
 const CANADIAN_AIRPORTS = new Set(['YVR', 'YYC', 'YEG', 'YXE', 'YWG', 'YQR', 'YYZ', 'YTZ', 'YOW', 'YUL', 'YQB', 'YHZ', 'YQM', 'YYT']);
 const RETAILER_HOST_SUFFIXES = ['justfly.com', 'flightnetwork.com', 'priceline.com', 'aa.com', 'delta.com', 'alaskaair.com', 'onetravel.com', 'anrdoezrs.net', 'westjet.com', 'condor.com'];
 
+interface StartRunResult {
+  started: boolean;
+  reason?: string;
+}
+
 async function getWatches(): Promise<FareWatch[]> {
   const result = await chrome.storage.local.get(WATCHES_KEY);
   return Array.isArray(result[WATCHES_KEY]) ? (result[WATCHES_KEY] as FareWatch[]) : [];
@@ -84,6 +89,30 @@ async function saveRun(run: ActiveVerificationRun | null): Promise<void> {
   const updated = activeVerificationRunSchema.parse({ ...run, updatedAt: new Date().toISOString() });
   await chrome.storage.local.set({ [STORAGE_KEYS.activeRun]: updated });
   await chrome.alarms.create(RUN_TIMEOUT_ALARM, { when: Date.now() + RUN_TIMEOUT_BY_STAGE[updated.stage] });
+}
+
+async function recoverScheduler(): Promise<{ recovered: boolean; run: ActiveVerificationRun | null }> {
+  const run = await getRun();
+  if (!run) return { recovered: false, run: null };
+  const ageMs = Date.now() - Date.parse(run.updatedAt);
+  const maximumAgeMs = RUN_TIMEOUT_BY_STAGE[run.stage] + 30_000;
+  const tabExists = run.tabId !== undefined && await chrome.tabs.get(run.tabId).then(() => true).catch(() => false);
+  if (tabExists && Number.isFinite(ageMs) && ageMs <= maximumAgeMs) return { recovered: false, run };
+
+  const policies = await getPolicies();
+  for (const policyId of run.policyIds) {
+    const policy = policies.find((item) => item.id === policyId);
+    if (!policy) continue;
+    await updateStatus(policyId, {
+      state: 'error',
+      lastCompletedAt: new Date().toISOString(),
+      message: tabExists
+        ? 'The previous verification expired before it completed. Check now is available again.'
+        : 'The previous verification tab no longer exists. Check now is available again.',
+    });
+  }
+  await saveRun(null);
+  return { recovered: true, run: null };
 }
 
 async function updateStatus(policyId: string, patch: Partial<PolicyStatus>): Promise<PolicyStatus> {
@@ -131,13 +160,14 @@ function nextDueAt(policy: FareSearchPolicy): string {
   return new Date(Date.now() + policy.schedule.intervalMinutes * 60_000).toISOString();
 }
 
-async function startRun(policyIds?: string[], interactive = false): Promise<boolean> {
-  if (await getRun()) return false;
+async function startRun(policyIds?: string[], interactive = false): Promise<StartRunResult> {
+  const scheduler = await recoverScheduler();
+  if (scheduler.run) return { started: false, reason: 'A verification is already running. Wait for it to finish or close its Matrix tab.' };
   const policies = await getPolicies();
   const selected = policies.filter((policy) => policy.enabled && policy.schedule.enabled && (!policyIds || policyIds.includes(policy.id)));
   const tasks = selected.flatMap(buildMatrixSearchTasks);
   const first = tasks[0];
-  if (!first) return false;
+  if (!first) return { started: false, reason: 'No enabled search policy was available to run.' };
   for (const policy of selected) {
     await updateStatus(policy.id, { state: 'running', lastAttemptAt: new Date().toISOString(), nextDueAt: nextDueAt(policy), message: 'Initializing the ITA Matrix browser session.' });
   }
@@ -162,11 +192,12 @@ async function startRun(policyIds?: string[], interactive = false): Promise<bool
     policyIds: selected.map((policy) => policy.id),
   });
   if (tab.id !== undefined) await chrome.tabs.update(tab.id, { url: 'https://matrix.itasoftware.com/search', active: interactive });
-  return true;
+  return { started: true };
 }
 
 async function dispatchDuePolicies(): Promise<void> {
-  if (await getRun()) return;
+  const scheduler = await recoverScheduler();
+  if (scheduler.run) return;
   const [policies, statuses] = await Promise.all([getPolicies(), getStatuses()]);
   const now = Date.now();
   const due = policies.filter((policy) => policy.enabled && policy.schedule.enabled && Date.parse(statuses.find((status) => status.policyId === policy.id)?.nextDueAt ?? '1970-01-01') <= now);
@@ -476,7 +507,14 @@ async function handleMessage(message: ExtensionMessage, sender: chrome.runtime.M
     await ensureDefaults();
     return { ok: true };
   }
-  if (message.type === 'RUN_POLICIES_NOW') return { ok: await startRun(message.policyIds, true) };
+  if (message.type === 'RUN_POLICIES_NOW') {
+    const result = await startRun(message.policyIds, true);
+    return { ok: result.started, reason: result.reason };
+  }
+  if (message.type === 'RECOVER_SCHEDULER') {
+    const result = await recoverScheduler();
+    return { ok: true, recovered: result.recovered };
+  }
   if (message.type === 'SAVE_NOTIFICATION_SETTINGS') {
     const settings = notificationSettingsSchema.parse({ browserEnabled: message.browserEnabled, ntfyTopic: message.ntfyTopic || undefined });
     await chrome.storage.local.set({ [STORAGE_KEYS.notificationSettings]: settings });
@@ -511,12 +549,17 @@ async function handleMessage(message: ExtensionMessage, sender: chrome.runtime.M
   return { ok: true };
 }
 
+async function initializeExtension(): Promise<void> {
+  await ensureDefaults();
+  await recoverScheduler();
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-  void ensureDefaults();
+  void initializeExtension();
 });
 
-chrome.runtime.onStartup.addListener(() => void ensureDefaults());
+chrome.runtime.onStartup.addListener(() => void initializeExtension());
 
 chrome.runtime.onMessage.addListener((rawMessage: unknown, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
@@ -574,4 +617,4 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   });
 });
 
-void ensureDefaults();
+void initializeExtension();

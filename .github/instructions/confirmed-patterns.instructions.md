@@ -58,3 +58,15 @@ description: FareProof decisions and user-confirmed implementation patterns.
 - **Rule:** On Matrix Flights, publish usable itinerary links even while row-level progress indicators remain; rank eligible candidates by lowest per-person price and shortest duration as the tie-breaker, open the selected itinerary, capture Matrix's copied JSON, then continue through BookWithMatrix and each retailer. Manual import must accept the same authoritative Matrix copied-JSON shape.
 - **Why:** Matrix keeps asynchronous row indicators after its result links are actionable, and its copied JSON is the most complete evidence source for codeshare, cabin, fare basis, passenger count, and total price.
 - **Reference:** `extractMatrixFlights`, `rankMatrixFlightCandidates`, `parseImportedFare`, and `tests/e2e/extension.spec.ts`.
+
+## Check now never fails silently
+- **Confirmed:** 2026-07-10 — Martin reported clicking Check now doing nothing with no console error.
+- **Rule:** Validate persisted run ownership and stage age on extension startup, every scheduler alarm, side-panel load, and Check now. Clear a run whose tab is missing or whose stage timeout expired; return and display a user-facing reason when a healthy run or runtime failure prevents a new check. Lock this with an unpacked-extension test seeded with stale durable state.
+- **Why:** Manifest V3 workers and owned tabs can end independently, leaving syntactically valid storage that otherwise blocks both manual and automatic checks without an exception.
+- **Reference:** `recoverScheduler`, `PolicyDashboard`, and `tests/e2e/extension.spec.ts`.
+
+## Fare evidence is actionable only after retailer validation
+- **Confirmed:** 2026-07-10 — Martin reported that a route, price, source, and generic "Fare detected" label did not provide enough information to understand or book the result.
+- **Rule:** Show the latest fare's route, travel date, cabin, matched policy, per-person and total prices, traveler count, marketing and operating flight identities, fare identity, evidence source, check time, and confirmed or missing rules in the side panel. Offer a direct booking action only for an HTTPS retailer URL captured from complete retailer evidence with no missing validation rules; Matrix-only or incomplete evidence must show the next verification step without a booking link.
+- **Why:** A detected Matrix price is not a booking-ready result. The user needs enough evidence to assess the fare and an observed retailer destination only after route, date, flight, cabin, and price survive validation.
+- **Reference:** `FareEvidencePanel`, `buildFareEvidenceView`, and `tests/e2e/extension.spec.ts`.

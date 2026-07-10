@@ -4,7 +4,7 @@ export default defineManifest({
   manifest_version: 3,
   name: 'FareProof',
   description: 'Capture airfare evidence and compare whether the same itinerary remains available.',
-  version: '0.2.2',
+  version: '0.2.3',
   permissions: ['storage', 'alarms', 'notifications', 'tabs', 'scripting', 'sidePanel'],
   host_permissions: [
     'https://matrix.itasoftware.com/*',

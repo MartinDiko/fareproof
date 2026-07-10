@@ -12,6 +12,15 @@ export function parseDisplayedMoney(text: string): { amountMinor: number; curren
   return { currency, amountMinor: Math.round(Number(match[2].replace(/,/g, '')) * 100) };
 }
 
+export function parseDisplayedDuration(text: string): number | undefined {
+  const days = /(\d+)\s*d(?:ays?)?\b/i.exec(text)?.[1];
+  const hours = /(\d+)\s*h(?:ours?)?\b/i.exec(text)?.[1];
+  const minutes = /(\d+)\s*m(?:in(?:utes?)?)?\b/i.exec(text)?.[1];
+  if (!days && !hours && !minutes) return undefined;
+  const total = Number(days ?? 0) * 1_440 + Number(hours ?? 0) * 60 + Number(minutes ?? 0);
+  return total > 0 ? total : undefined;
+}
+
 function searchStartYear(url: string): number {
   try {
     const encoded = new URL(url).searchParams.get('search');
@@ -58,7 +67,18 @@ export function extractMatrixFlights(document: Document, baseUrl: string): Fligh
     const price = parseDisplayedMoney(link.textContent ?? '');
     if (!price) continue;
     const row = link.closest('[role=row], tr');
-    candidates.push({ url: new URL(link.getAttribute('href') ?? '', baseUrl).href, priceMinor: price.amountMinor, currency: price.currency, airline: row?.children[1]?.textContent?.trim() ?? '', route: row?.textContent?.trim() ?? '' });
+    const rowText = row?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const durationText = row
+      ? [...row.children].map((cell) => cell.textContent?.trim() ?? '').find((text) => /\d+\s*h/i.test(text))
+      : undefined;
+    candidates.push({
+      url: new URL(link.getAttribute('href') ?? '', baseUrl).href,
+      priceMinor: price.amountMinor,
+      currency: price.currency,
+      durationMinutes: parseDisplayedDuration(durationText ?? rowText),
+      airline: row?.children[1]?.textContent?.trim() ?? '',
+      route: rowText,
+    });
   }
   return candidates;
 }

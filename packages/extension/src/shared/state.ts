@@ -39,6 +39,7 @@ const matrixFlightCandidateSchema = z.object({
   url: z.string().url(),
   priceMinor: z.number().int().nonnegative(),
   currency: z.string(),
+  durationMinutes: z.number().int().positive().optional(),
   airline: z.string(),
   route: z.string(),
 });

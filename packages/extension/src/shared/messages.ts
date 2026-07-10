@@ -11,6 +11,7 @@ const matrixFlightCandidateSchema = z.object({
   url: z.string().url(),
   priceMinor: z.number().int().nonnegative(),
   currency: z.string(),
+  durationMinutes: z.number().int().positive().optional(),
   airline: z.string(),
   route: z.string(),
 });
@@ -71,5 +72,6 @@ export const contentCommandSchema = z.discriminatedUnion('type', [
 
 export type ExtensionMessage = z.infer<typeof extensionMessageSchema>;
 export type ContentCommand = z.infer<typeof contentCommandSchema>;
+export type MatrixFlightCandidate = Extract<ExtensionMessage, { type: 'MATRIX_FLIGHTS' }>['candidates'][number];
 export type RetailerPageObservation = Extract<ExtensionMessage, { type: 'RETAILER_PAGE' }>['observation'];
 export type BookWithMatrixResultLink = Extract<ExtensionMessage, { type: 'BOOKWITHMATRIX_RESULTS' }>['links'][number];

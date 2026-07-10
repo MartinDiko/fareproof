@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compareItinerary, createWatch, parseFareProofExport, parseImportedFare } from './index';
+import matrixFixture from './test-fixtures/ita-yvr-fra-ws-de.json';
 
 const suppliedFare = JSON.stringify({
   route: 'YVR-FRA',
@@ -21,6 +22,13 @@ describe('FareProof core', () => {
 
     expect(fare.segments[0]).toMatchObject({ marketingCarrier: { code: 'WS' }, marketingFlightNumber: '5943', operatingCarrier: { code: 'DE' }, operatingFlightNumber: '2455', bookingClass: 'D', fareBasis: 'DZ0D0HNS' });
     expect(fare.fare.total).toMatchObject({ amountMinor: 131367, currency: 'CAD' });
+  });
+
+  it('accepts Matrix Copy itinerary as JSON in manual import', () => {
+    const fare = parseImportedFare(JSON.stringify(matrixFixture), new Date('2026-07-10T12:00:00Z'));
+
+    expect(fare).toMatchObject({ sourceSite: 'ita-matrix', passengers: { adults: 2 }, fare: { total: { amountMinor: 262_734, currency: 'CAD' } } });
+    expect(fare.segments[0]).toMatchObject({ marketingCarrier: { code: 'WS' }, marketingFlightNumber: '5943', operatingCarrier: { code: 'DE' }, operatingFlightNumber: '2455', durationMinutes: 595 });
   });
 
   it('treats an exact but search-only result as ineligible for an alert', () => {

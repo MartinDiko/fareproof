@@ -22,6 +22,7 @@ import {
   type PolicyStatus,
 } from '../shared/state';
 import { validateRetailerObservation } from './retailerValidation';
+import { rankMatrixFlightCandidates } from './matrixCandidateRanking';
 
 const WATCHES_KEY = 'fareproof.watches';
 const CURRENT_OBSERVATION_KEY = 'fareproof.currentObservation';
@@ -342,7 +343,11 @@ async function handleMatrixFlights(message: Extract<ExtensionMessage, { type: 'M
   const policies = await getPolicies();
   const policy = policyForRun(run, policies);
   if (!policy || run.stage !== 'flights') return;
-  const candidates = message.candidates.filter((candidate) => candidate.currency === policy.currency && candidate.priceMinor <= policy.maximumPricePerPersonMinor).sort((left, right) => left.priceMinor - right.priceMinor).slice(0, 5);
+  const candidates = rankMatrixFlightCandidates(
+    message.candidates,
+    policy.currency,
+    policy.maximumPricePerPersonMinor,
+  ).slice(0, 5);
   const first = candidates[0];
   if (!first) {
     await advanceTask(run, 'No ITA flight result met the per-person price limit.', 'no-match');

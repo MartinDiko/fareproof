@@ -52,3 +52,9 @@ description: FareProof decisions and user-confirmed implementation patterns.
 - **Rule:** Treat Matrix's console `ERROR Object` as site-generated, not a FareProof exception. Initialize Matrix at `/search`, wait at most 60 seconds for calendar data, retry once with a fresh Matrix session, then stop the cycle and mark every affected policy as Matrix unavailable with its next retry time; never leave an owned tab spinning indefinitely or repeat every task during a site-wide failure.
 - **Why:** Matrix can return HTTP 200 for its shell while its internal content RPC fails, including an unauthenticated user-info probe; bounded recovery makes the scheduler truthful and prevents one upstream outage from consuming an entire cycle.
 - **Reference:** `retryMatrixCalendar` and `failMatrixRun` in `packages/extension/src/background/serviceWorker.ts`; `tests/e2e/extension-live.spec.ts`.
+
+## Matrix candidates advance from visible results
+- **Confirmed:** 2026-07-10 — Martin reported FareProof stopping on Matrix's Flights page and Matrix copied JSON being rejected by manual import.
+- **Rule:** On Matrix Flights, publish usable itinerary links even while row-level progress indicators remain; rank eligible candidates by lowest per-person price and shortest duration as the tie-breaker, open the selected itinerary, capture Matrix's copied JSON, then continue through BookWithMatrix and each retailer. Manual import must accept the same authoritative Matrix copied-JSON shape.
+- **Why:** Matrix keeps asynchronous row indicators after its result links are actionable, and its copied JSON is the most complete evidence source for codeshare, cabin, fare basis, passenger count, and total price.
+- **Reference:** `extractMatrixFlights`, `rankMatrixFlightCandidates`, `parseImportedFare`, and `tests/e2e/extension.spec.ts`.

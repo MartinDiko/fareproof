@@ -78,6 +78,12 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
     await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     await expect(page.getByText('Fare 1 · YVR to FRA one way')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(420);
+    await page.getByLabel('Fare JSON').fill(matrixFixture);
+    await page.getByRole('button', { name: 'Parse and create watch' }).click();
+    await expect.poll(async () => page.evaluate(async () => {
+      const watches = (await chrome.storage.local.get('fareproof.watches'))['fareproof.watches'];
+      return watches?.[0]?.criteria?.target?.segments?.[0];
+    })).toMatchObject({ marketingCarrier: { code: 'WS' }, marketingFlightNumber: '5943', operatingCarrier: { code: 'DE' }, operatingFlightNumber: '2455' });
     const optionsPage = await context.newPage();
     optionsPage.on('console', (message) => {
       if (message.type() === 'error') consoleErrors.push(message.text());

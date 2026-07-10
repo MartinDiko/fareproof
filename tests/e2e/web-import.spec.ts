@@ -1,20 +1,12 @@
+import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 
-const suppliedFare = {
-  route: 'YVR-FRA',
-  date: '2026-09-17',
-  marketingCarrier: 'WS',
-  marketingFlightNumber: '5943',
-  operatingCarrier: 'DE',
-  operatingFlightNumber: '2455',
-  bookingClass: 'D',
-  cabin: 'BUSINESS',
-  fareBasis: 'DZ0D0HNS',
-  currency: 'CAD',
-  total: 1313.67,
-};
+const matrixItineraryJson = readFileSync(
+  new URL('../../packages/core/src/test-fixtures/ita-yvr-fra-ws-de.json', import.meta.url),
+  'utf8',
+);
 
-test('imports and reports the supplied codeshare fare', async ({ page }) => {
+test('imports and reports Matrix copied itinerary JSON', async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text());
@@ -30,13 +22,14 @@ test('imports and reports the supplied codeshare fare', async ({ page }) => {
   await page.getByRole('button', { name: 'Unlock' }).click();
   await expect(page.getByRole('heading', { name: 'Fare watches', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Add fare' }).click();
-  await page.getByLabel('Fare JSON').fill(JSON.stringify(suppliedFare));
+  await expect(page.getByText('Accepts a FareProof export, Matrix copied JSON, or compact fare JSON.')).toBeVisible();
+  await page.getByLabel('Fare JSON').fill(matrixItineraryJson);
   await page.getByRole('button', { name: 'Validate and import' }).click();
 
   await expect(page.getByText('YVR → FRA')).toBeVisible();
   await expect(page.getByText('WS 5943')).toBeVisible();
   await expect(page.getByText('Operated by DE 2455')).toBeVisible();
   await expect(page.getByText('DZ0D0HNS')).toBeVisible();
-  await expect(page.getByText(/1,313\.67/)).toBeVisible();
+  await expect(page.getByText(/2,627\.34/)).toBeVisible();
   expect(consoleErrors).toEqual([]);
 });

@@ -65,22 +65,24 @@ function clearLoadingOverlay(): void {
 }
 
 function inspectPage(): void {
-  if (document.querySelector('[role=progressbar]')) {
-    if (location.pathname === '/calendar') renderLoadingOverlay();
-    return;
-  }
-  clearLoadingOverlay();
   if (location.pathname === '/' || location.pathname === '/search') {
+    clearLoadingOverlay();
     publish({ type: 'MATRIX_HOME_READY' });
     return;
   }
   if (location.pathname === '/calendar') {
     const entries = extractMatrixCalendar(document, location.href);
-    if (entries.length) publish({ type: 'MATRIX_CALENDAR', entries });
+    if (entries.length) {
+      clearLoadingOverlay();
+      publish({ type: 'MATRIX_CALENDAR', entries });
+    } else if (document.querySelector('[role=progressbar]')) {
+      renderLoadingOverlay();
+    }
     return;
   }
   if (location.pathname === '/flights') {
-    publish({ type: 'MATRIX_FLIGHTS', candidates: extractMatrixFlights(document, location.href) });
+    const candidates = extractMatrixFlights(document, location.href);
+    if (candidates.length) publish({ type: 'MATRIX_FLIGHTS', candidates });
     return;
   }
   if (location.pathname === '/itinerary' && document.body.innerText.includes('Copy itinerary as JSON')) {

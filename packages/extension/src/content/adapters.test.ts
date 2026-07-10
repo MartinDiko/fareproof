@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { parseHTML } from 'linkedom';
 import { describe, expect, it } from 'vitest';
 import { extractBookWithMatrixLinks } from './bookwithmatrix/extraction';
-import { extractMatrixCalendar, extractMatrixFlights } from './ita/extraction';
+import { extractMatrixCalendar, extractMatrixFlights, parseDisplayedDuration } from './ita/extraction';
 import { extractRetailerPage } from './retailer/extraction';
 
 function fixture(name: string): Document {
@@ -24,8 +24,13 @@ describe('Website adapters', () => {
   it('extracts Matrix itinerary links independently', () => {
     const candidates = extractMatrixFlights(fixture('matrix-calendar.html'), 'https://matrix.itasoftware.com/flights');
 
-    expect(candidates[0]).toMatchObject({ url: 'https://matrix.itasoftware.com/itinerary?search=fixture', priceMinor: 131_400, currency: 'CAD', airline: 'WestJet' });
+    expect(candidates[0]).toMatchObject({ url: 'https://matrix.itasoftware.com/itinerary?search=fixture', priceMinor: 131_400, currency: 'CAD', durationMinutes: 595, airline: 'WestJet' });
     expect(candidates).toHaveLength(2);
+  });
+
+  it('normalizes Matrix duration labels', () => {
+    expect(parseDisplayedDuration('9h 55m')).toBe(595);
+    expect(parseDisplayedDuration('1 day 6h 45m')).toBe(1_845);
   });
 
   it('extracts each BookWithMatrix retailer as a separate handoff', () => {

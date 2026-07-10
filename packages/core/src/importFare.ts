@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { fareProofExportSchema, observedItinerarySchema, type FareProofExport, type ObservedItinerary } from './domain';
+import { parseMatrixItineraryJson } from './matrix';
 
 const MAX_IMPORT_BYTES = 512_000;
 
@@ -32,9 +33,15 @@ export function parseImportedFare(text: string, now = new Date()): ObservedItine
   const normalized = observedItinerarySchema.safeParse(input);
   if (normalized.success) return normalized.data;
 
+  try {
+    return parseMatrixItineraryJson(text, '', now);
+  } catch {
+    // Continue to the compact manual shape.
+  }
+
   const compact = compactFareSchema.safeParse(input);
   if (!compact.success) {
-    throw new Error('JSON does not match a supported FareProof or compact ITA fare shape.');
+    throw new Error('JSON does not match a supported FareProof, Matrix itinerary, or compact fare shape.');
   }
 
   const value = compact.data;

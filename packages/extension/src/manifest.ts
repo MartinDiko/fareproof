@@ -1,0 +1,57 @@
+import { defineManifest } from '@crxjs/vite-plugin';
+
+export default defineManifest({
+  manifest_version: 3,
+  name: 'FareProof',
+  description: 'Capture airfare evidence and compare whether the same itinerary remains available.',
+  version: '0.2.0',
+  permissions: ['storage', 'alarms', 'notifications', 'tabs', 'scripting', 'sidePanel'],
+  host_permissions: [
+    'https://matrix.itasoftware.com/*',
+    'https://bookwithmatrix.com/*',
+    'https://*.justfly.com/*',
+    'https://*.flightnetwork.com/*',
+    'https://www.priceline.com/*',
+    'https://www.aa.com/*',
+    'https://www.delta.com/*',
+    'https://www.alaskaair.com/*',
+    'https://www.onetravel.com/*',
+    'https://www.anrdoezrs.net/*',
+    'https://*.westjet.com/*',
+    'https://*.condor.com/*',
+  ],
+  optional_host_permissions: ['https://ntfy.sh/*'],
+  icons: { '16': 'icon16.png', '32': 'icon32.png', '48': 'icon48.png', '128': 'icon128.png' },
+  background: { service_worker: 'src/background/serviceWorker.ts', type: 'module' },
+  action: { default_popup: 'popup.html', default_title: 'Open FareProof', default_icon: { '16': 'icon16.png', '32': 'icon32.png' } },
+  side_panel: { default_path: 'sidepanel.html' },
+  options_page: 'options.html',
+  content_scripts: [
+    {
+      matches: ['https://matrix.itasoftware.com/*'],
+      js: ['src/content/ita/contentScript.ts'],
+      run_at: 'document_idle',
+    },
+    {
+      matches: ['https://bookwithmatrix.com/*'],
+      js: ['src/content/bookwithmatrix/contentScript.ts'],
+      run_at: 'document_idle',
+    },
+    {
+      matches: [
+        'https://*.justfly.com/*',
+        'https://*.flightnetwork.com/*',
+        'https://www.priceline.com/*',
+        'https://www.aa.com/*',
+        'https://www.delta.com/*',
+        'https://www.alaskaair.com/*',
+        'https://www.onetravel.com/*',
+        'https://*.westjet.com/*',
+        'https://*.condor.com/*',
+      ],
+      js: ['src/content/retailer/contentScript.ts'],
+      run_at: 'document_idle',
+    },
+  ],
+  content_security_policy: { extension_pages: "script-src 'self'; object-src 'self'" },
+});

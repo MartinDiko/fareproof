@@ -1,0 +1,2076 @@
+# Build “FareProof” — A Private Chrome Extension That Captures ITA Matrix Fares and Verifies Whether They Are Actually Bookable
+
+You are a senior browser-extension architect, TypeScript engineer, airfare-pricing systems designer, reliability engineer, and product designer.
+
+Build a production-quality private Chrome extension called **FareProof**.
+
+I will install it manually in my own Chrome browser using **Load unpacked**. It is not initially intended for publication in the Chrome Web Store.
+
+The extension’s purpose is to:
+
+1. Observe favorable flight results I find in ITA Matrix.
+2. Capture the complete itinerary and fare construction.
+3. Search or open BookWithMatrix and other supported airline or travel-booking sites.
+4. determine whether the same itinerary is offered at approximately the same all-in price;
+5. distinguish between:
+
+   * an itinerary merely displayed by ITA;
+   * a fare found by another search engine;
+   * a fare that reaches a retailer’s checkout flow;
+   * a fare that appears genuinely ticketable;
+6. notify me immediately when a sufficiently close, credible, bookable match is detected;
+7. preserve enough evidence that I can quickly complete the booking myself.
+
+The extension must not purchase anything, submit payment, enter passenger details, bypass a CAPTCHA, defeat bot protection, impersonate another user, circumvent access controls, or violate a website restriction.
+
+It is a **research, verification, and notification assistant**, not an autonomous purchasing bot.
+
+---
+
+# 1. Primary product outcome
+
+The primary user workflow should be:
+
+1. I run a normal ITA Matrix search.
+
+2. I open or select a favorable result.
+
+3. FareProof detects the itinerary.
+
+4. A compact button appears:
+
+   **Watch and verify this fare**
+
+5. FareProof captures:
+
+   * origin and destination;
+   * travel date;
+   * departure and arrival times;
+   * marketing carrier;
+   * operating carrier;
+   * marketing flight number;
+   * operating flight number;
+   * cabin;
+   * booking class;
+   * fare basis;
+   * validating carrier, when available;
+   * point of sale;
+   * currency;
+   * base fare;
+   * taxes;
+   * carrier-imposed surcharges;
+   * all-in price;
+   * number of passengers;
+   * trip type;
+   * stops;
+   * aircraft;
+   * fare rules and warnings;
+   * raw ITA JSON, when available;
+   * relevant visible page text as a fallback;
+   * capture timestamp;
+   * source URL;
+   * a normalized itinerary fingerprint.
+
+6. FareProof creates a **fare watch**.
+
+7. It attempts verification through supported channels.
+
+8. It classifies each result by confidence.
+
+9. It alerts me when a result meets the configured match criteria.
+
+10. The notification gives me one-click access to:
+
+    * the matching retailer;
+    * the exact search;
+    * the captured ITA result;
+    * the comparison evidence;
+    * a copyable agent/GDS request;
+    * a “verify manually now” action.
+
+The experience should feel like an intelligent airfare forensic tool, not a generic price tracker.
+
+---
+
+# 2. Important airfare concepts
+
+Do not treat two flights as identical solely because they use the same aircraft and depart at the same time.
+
+The system must understand the distinction between:
+
+* marketing carrier;
+* operating carrier;
+* marketing flight number;
+* operating flight number;
+* validating carrier;
+* booking class;
+* cabin;
+* fare basis;
+* filed fare;
+* codeshare inventory;
+* point of sale;
+* currency;
+* tax and surcharge composition;
+* passenger count;
+* ticketing channel;
+* branded fare;
+* itinerary-level price;
+* segment-level availability.
+
+Example:
+
+* WestJet-marketed flight: `WS 5943`
+* operated by Condor: `DE 2455`
+* booking class: `D`
+* cabin: business
+* fare basis: `DZ0D0HNS`
+* validating or fare-owning carrier: WestJet
+* ITA price: CAD 1,313.67
+
+A retailer showing Condor `DE 2455` for CAD 2,500 is not an exact fare match merely because it is the same physical flight.
+
+FareProof must preserve and compare both identities.
+
+---
+
+# 3. Core match philosophy
+
+A price alert must not be based on price alone.
+
+A match must evaluate:
+
+## 3.1 Itinerary identity
+
+Compare:
+
+* origin airport;
+* destination airport;
+* travel date;
+* local departure time;
+* local arrival time;
+* stop count;
+* connection airports;
+* marketing carrier;
+* marketing flight number;
+* operating carrier;
+* operating flight number;
+* segment sequence;
+* cabin for every segment.
+
+## 3.2 Fare identity
+
+Compare, when available:
+
+* booking class;
+* fare basis;
+* validating carrier;
+* fare owner;
+* branded fare;
+* point of sale;
+* passenger type;
+* one-way versus round-trip construction;
+* change and cancellation conditions;
+* baggage inclusion.
+
+## 3.3 Price identity
+
+Compare:
+
+* original currency;
+* total price;
+* base fare;
+* taxes;
+* surcharges;
+* passenger count;
+* whether the displayed amount is per passenger or for the entire booking;
+* whether the retailer adds a booking fee;
+* whether currency conversion has occurred;
+* whether the price includes mandatory fees.
+
+## 3.4 Bookability evidence
+
+Classify evidence as:
+
+1. **ITA only**
+2. **Search result reproduced**
+3. **Retailer result reproduced**
+4. **Exact itinerary selectable**
+5. **Fare survives selection**
+6. **Passenger-details page reached**
+7. **Payment page reached without entering payment**
+8. **Manual confirmation required**
+9. **Unavailable or failed repricing**
+
+The extension must never claim that a fare is definitively ticketed or guaranteed unless an actual ticket exists, which this extension will not create.
+
+Use language such as:
+
+* “Exact price reproduced”
+* “Likely bookable”
+* “Reached passenger-details stage”
+* “Retailer repriced”
+* “Search-only match”
+* “Possible codeshare mismatch”
+* “Manual verification needed”
+
+Never display “Guaranteed bookable.”
+
+---
+
+# 4. Technical stack
+
+Use:
+
+* Chrome Extension Manifest V3;
+* TypeScript with strict mode;
+* React;
+* Vite;
+* a lightweight state-management approach;
+* CSS modules or similarly maintainable styling;
+* Vitest for unit tests;
+* Playwright for browser-oriented integration tests where feasible;
+* ESLint;
+* Prettier;
+* Zod for runtime schema validation;
+* IndexedDB for historical observations;
+* `chrome.storage.local` for settings, watch summaries, and durable service-worker state;
+* `chrome.storage.session` only for truly ephemeral state;
+* `chrome.notifications`;
+* `chrome.alarms`;
+* `chrome.sidePanel`;
+* `chrome.scripting`;
+* `chrome.tabs`;
+* `chrome.runtime` messaging;
+* optional `chrome.webRequest` only for narrowly defined observation requirements;
+* no remotely hosted executable JavaScript.
+
+Do not use a remote backend in version one.
+
+All data must remain on the local computer unless the user explicitly configures an optional notification integration later.
+
+The extension should build into a `/dist` folder that can be loaded unpacked.
+
+---
+
+# 5. Architectural principles
+
+Create the extension as a set of clearly isolated layers:
+
+```text
+src/
+  background/
+  content/
+    ita/
+    bookwithmatrix/
+    westjet/
+    condor/
+    generic/
+  adapters/
+  comparison/
+  extraction/
+  domain/
+  storage/
+  notifications/
+  scheduling/
+  sidepanel/
+  popup/
+  options/
+  shared/
+  test-fixtures/
+```
+
+Use the following conceptual architecture:
+
+```text
+Website Page
+    ↓
+Site-Specific Content Adapter
+    ↓
+Normalized Observation
+    ↓
+Runtime Message Bus
+    ↓
+Background Service Worker
+    ↓
+Normalization + Matching Engine
+    ↓
+Watch State + Observation History
+    ↓
+Notification / Side Panel / Manual Actions
+```
+
+Do not couple the domain model to one website’s DOM.
+
+Each supported site must implement an adapter contract.
+
+---
+
+# 6. Site adapter contract
+
+Create an interface similar to:
+
+```ts
+interface FareSiteAdapter {
+  id: string;
+  displayName: string;
+  supportedHosts: string[];
+
+  canHandle(context: PageContext): boolean;
+
+  detectPageType(context: PageContext): Promise<PageType>;
+
+  extractSearchCriteria(
+    context: PageContext,
+  ): Promise<SearchCriteria | null>;
+
+  extractItineraries(
+    context: PageContext,
+  ): Promise<ObservedItinerary[]>;
+
+  extractSelectedItinerary(
+    context: PageContext,
+  ): Promise<ObservedItinerary | null>;
+
+  buildSearchUrl?(
+    watch: FareWatch,
+  ): Promise<string | null>;
+
+  advanceVerification?(
+    context: PageContext,
+    watch: FareWatch,
+  ): Promise<VerificationStepResult>;
+
+  observeDynamicChanges?(
+    callback: (observation: PageObservation) => void,
+  ): () => void;
+}
+```
+
+Adapters must be resilient to:
+
+* dynamic DOM rendering;
+* delayed results;
+* client-side navigation;
+* localized currency formatting;
+* minor CSS-class changes;
+* hidden accessibility labels;
+* multiple results on the page;
+* results loaded after scrolling;
+* itinerary repricing;
+* checkout pages opening in a new tab.
+
+Prefer:
+
+1. embedded structured JSON;
+2. accessible page attributes;
+3. semantic DOM content;
+4. stable labels;
+5. visible text parsing;
+6. CSS selectors only as the last layer.
+
+Every extraction field should carry provenance:
+
+```ts
+interface Provenance<T> {
+  value: T | null;
+  source:
+    | "embedded-json"
+    | "network-response"
+    | "dom"
+    | "aria"
+    | "visible-text"
+    | "derived"
+    | "manual";
+  confidence: number;
+  raw?: unknown;
+}
+```
+
+---
+
+# 7. ITA Matrix capture
+
+Build the ITA adapter first.
+
+The adapter should detect:
+
+* search-results pages;
+* itinerary details;
+* fare construction;
+* fare rules;
+* selected result;
+* any BookWithMatrix-compatible JSON;
+* structured state exposed in page scripts or browser-visible network responses.
+
+Do not depend exclusively on one extraction technique.
+
+Implement three capture strategies.
+
+## Strategy A: Embedded structured-data extraction
+
+Inspect script blocks and page state for structured itinerary data.
+
+Parse only data already delivered to the user’s browser.
+
+Validate all extracted payloads using Zod.
+
+## Strategy B: DOM extraction
+
+Read the selected itinerary and fare details from the rendered page.
+
+Use a `MutationObserver` to detect:
+
+* result selection;
+* result expansion;
+* fare-detail opening;
+* navigation between result pages;
+* price changes.
+
+## Strategy C: Manual JSON import
+
+Add a side-panel action:
+
+**Paste ITA or BookWithMatrix JSON**
+
+Allow the user to paste JSON like:
+
+```json
+{
+  "ext": {
+    "totalPrice": "CAD1313.67"
+  },
+  "itinerary": {
+    "...": "..."
+  }
+}
+```
+
+Parse and normalize it into the same domain object used by automatic extraction.
+
+The manual import path is essential because it provides a reliable fallback when ITA changes its page structure.
+
+---
+
+# 8. Normalized domain model
+
+Define comprehensive types.
+
+```ts
+type CurrencyCode = string;
+
+interface Money {
+  amountMinor: number;
+  currency: CurrencyCode;
+  originalText?: string;
+}
+
+interface AirportRef {
+  code: string;
+  cityName?: string;
+  airportName?: string;
+}
+
+interface CarrierRef {
+  code: string;
+  name?: string;
+}
+
+interface FlightSegment {
+  origin: AirportRef;
+  destination: AirportRef;
+
+  departureLocal: string;
+  arrivalLocal: string;
+
+  durationMinutes?: number;
+
+  marketingCarrier: CarrierRef;
+  marketingFlightNumber: string;
+
+  operatingCarrier?: CarrierRef;
+  operatingFlightNumber?: string;
+
+  bookingClass?: string;
+  cabin?: CabinClass;
+  fareBasis?: string;
+
+  aircraft?: string;
+  connectionDurationMinutes?: number;
+
+  sourceSegmentId?: string;
+}
+
+interface FareBreakdown {
+  baseFare?: Money;
+  taxes?: Array<{
+    code?: string;
+    name?: string;
+    amount: Money;
+  }>;
+  surcharges?: Array<{
+    code?: string;
+    name?: string;
+    amount: Money;
+  }>;
+  mandatoryFees?: Money;
+  total: Money;
+}
+
+interface FareIdentity {
+  validatingCarrier?: CarrierRef;
+  fareOwner?: CarrierRef;
+  fareBasisCodes: string[];
+  bookingClasses: string[];
+  brandedFare?: string;
+  pointOfSaleCountry?: string;
+  passengerTypeCodes: string[];
+  fareConstructionLines?: string[];
+}
+
+interface ObservedItinerary {
+  id: string;
+  sourceSite: string;
+  sourceUrl: string;
+  observedAt: string;
+
+  tripType: "one-way" | "round-trip" | "multi-city";
+  passengers: PassengerComposition;
+
+  segments: FlightSegment[];
+  fare: FareBreakdown;
+  fareIdentity: FareIdentity;
+
+  warnings: string[];
+  fareRulesSummary?: FareRulesSummary;
+
+  verificationStage: VerificationStage;
+  extractionConfidence: number;
+
+  rawEvidence?: RawEvidenceReference[];
+}
+```
+
+Store raw evidence separately where practical to avoid bloating watch-summary records.
+
+---
+
+# 9. Canonical itinerary fingerprint
+
+Generate multiple fingerprints rather than one overly rigid key.
+
+## Physical-flight fingerprint
+
+Based on:
+
+* origin;
+* destination;
+* date;
+* local departure time within a small tolerance;
+* operating carrier;
+* operating flight number.
+
+## Marketing-flight fingerprint
+
+Based on:
+
+* origin;
+* destination;
+* date;
+* marketing carrier;
+* marketing flight number;
+* cabin.
+
+## Fare fingerprint
+
+Based on:
+
+* marketing-flight fingerprint;
+* booking class;
+* fare basis;
+* validating carrier;
+* currency;
+* passenger composition;
+* point of sale.
+
+## Journey fingerprint
+
+Based on the ordered sequence of all physical segments.
+
+Store all fingerprints on the watch and each observation.
+
+This lets the system detect cases such as:
+
+* exact WestJet-marketed match;
+* same physical Condor flight but different marketing carrier;
+* same itinerary but different booking class;
+* same fare basis with a small price difference;
+* same price but incorrect cabin;
+* same outbound but missing or different connecting segments.
+
+---
+
+# 10. Fare-watch configuration
+
+When creating a watch, show sensible defaults and advanced settings.
+
+```ts
+interface FareWatchCriteria {
+  target: ObservedItinerary;
+
+  priceRule: {
+    mode:
+      | "same-or-lower"
+      | "within-absolute"
+      | "within-percent"
+      | "custom";
+    absoluteToleranceMinor?: number;
+    percentTolerance?: number;
+    maximumTotal?: Money;
+  };
+
+  itineraryRule: {
+    requireSameJourney: boolean;
+    requireSameMarketingFlight: boolean;
+    allowOperatingFlightMatch: boolean;
+    allowCodeshareSubstitution: boolean;
+    departureToleranceMinutes: number;
+    arrivalToleranceMinutes: number;
+    requireSameCabin: boolean;
+    requireSameCabinEverySegment: boolean;
+  };
+
+  fareRule: {
+    requireSameBookingClass: boolean;
+    requireSameFareBasis: boolean;
+    requireSameValidatingCarrier: boolean;
+    requireSamePointOfSale: boolean;
+  };
+
+  verificationRule: {
+    minimumStage: VerificationStage;
+    minimumConfidence: number;
+    requireNoRepricing: boolean;
+  };
+
+  schedule: {
+    enabled: boolean;
+    intervalMinutes: number;
+    activeHours?: {
+      startLocal: string;
+      endLocal: string;
+    };
+  };
+}
+```
+
+Default settings for a captured ITA fare:
+
+* maximum price: original ITA price plus CAD 20;
+* percent tolerance: 1.5%;
+* same origin and destination required;
+* same travel date required;
+* same segment sequence required;
+* same cabin on every segment required;
+* marketing flight preferred;
+* operating-flight match allowed but classified separately;
+* same booking class preferred;
+* same fare basis preferred;
+* notification threshold: retailer result selectable or better;
+* minimum confidence: 85%.
+
+Make these defaults editable.
+
+---
+
+# 11. Comparison engine
+
+Build a transparent, explainable comparison engine.
+
+Do not return only `true` or `false`.
+
+Return:
+
+```ts
+interface ComparisonResult {
+  overallClassification:
+    | "exact"
+    | "strong"
+    | "possible"
+    | "mismatch"
+    | "insufficient-evidence";
+
+  score: number;
+
+  priceComparison: PriceComparison;
+  itineraryComparison: ItineraryComparison;
+  fareComparison: FareIdentityComparison;
+  verificationComparison: VerificationComparison;
+
+  matchedFields: MatchField[];
+  mismatchedFields: MatchField[];
+  unknownFields: MatchField[];
+
+  humanSummary: string[];
+  alertEligible: boolean;
+}
+```
+
+Example explanation:
+
+```text
+STRONG MATCH — 91%
+
+✓ Same physical flight: DE 2455
+✓ Same date and departure time
+✓ Business cabin
+✓ Total CAD 1,318.42 is within CAD 4.75
+✓ Result survived itinerary selection
+
+⚠ Retailer markets the flight as DE 2455 instead of WS 5943
+⚠ Fare basis not exposed
+⚠ Validating carrier not confirmed
+```
+
+Another example:
+
+```text
+MISMATCH — 42%
+
+✓ Same physical flight
+✓ Same departure date
+
+✕ Retailer price is CAD 2,568.20
+✕ Booking class appears to differ
+✕ WestJet-marketed WS 5943 not reproduced
+```
+
+The scoring formula must be configurable and unit tested.
+
+A suggested weighting:
+
+* journey and segment identity: 30%;
+* cabin identity: 15%;
+* price identity: 20%;
+* marketing/operating identity: 10%;
+* fare identity: 15%;
+* verification depth: 10%.
+
+A hard mismatch should override the score for:
+
+* wrong date;
+* wrong origin or destination;
+* economy instead of business;
+* missing long-haul segment;
+* passenger-count mismatch;
+* price above the watch’s maximum.
+
+---
+
+# 12. Verification modes
+
+Support several verification modes because not every website can be safely or reliably queried in the same manner.
+
+## Mode A: Passive page verification
+
+When I manually visit a supported booking site, the content adapter:
+
+* detects the search;
+* compares the visible results with active watches;
+* records matching observations;
+* updates the side panel;
+* alerts me when the threshold is met.
+
+This should be the most reliable mode.
+
+## Mode B: User-initiated guided verification
+
+From the watch, I click:
+
+**Verify now**
+
+FareProof:
+
+1. opens the appropriate search page in a new tab;
+2. pre-populates query parameters when supported;
+3. waits for the page to load;
+4. extracts visible results;
+5. highlights likely matches;
+6. optionally guides me through one additional click;
+7. observes repricing;
+8. records the deepest stage reached.
+
+Do not automatically accept terms, sign in, solve CAPTCHAs, submit passenger forms, or click a final purchase button.
+
+## Mode C: Periodic lightweight recheck
+
+Use `chrome.alarms` to periodically evaluate due watches.
+
+Because browser extensions and retailer pages may require an active browser session or manual interaction:
+
+* do not promise 24/7 server-grade monitoring;
+* mark each check as attempted, completed, blocked, throttled, or requiring interaction;
+* do not create an endless stream of background tabs;
+* limit concurrent verification;
+* use exponential backoff;
+* enforce domain-specific cooldowns;
+* stop automatic checks after repeated blocking;
+* expose the exact last-check status.
+
+Where a site cannot be safely checked in the background, create a ready-to-run verification task and notify me:
+
+**Fare watch is due — open verification**
+
+## Mode D: Search-page opportunistic verification
+
+Whenever I browse a supported airfare site, compare the current results against every relevant active watch.
+
+For example, a YVR–FRA result should only be compared against watches with compatible:
+
+* airports;
+* travel dates;
+* passenger count;
+* trip type.
+
+This passive intelligence should operate without requiring me to select a watch first.
+
+---
+
+# 13. Supported verification channels
+
+Start with an adapter registry.
+
+## Phase 1
+
+Implement:
+
+* ITA Matrix capture;
+* BookWithMatrix capture and handoff assistance;
+* WestJet;
+* Condor;
+* a generic airline-results adapter;
+* a generic OTA-results adapter;
+* manual result import.
+
+## Phase 2 placeholders
+
+Create interfaces and documented placeholders for:
+
+* Google Flights;
+* Expedia;
+* Priceline;
+* Orbitz;
+* airline-specific sites;
+* travel-agent or GDS evidence manually entered by the user.
+
+Do not falsely claim support for a site until its adapter has tests and extraction fixtures.
+
+Each adapter should have a capability descriptor:
+
+```ts
+interface AdapterCapabilities {
+  canExtractSearchCriteria: boolean;
+  canExtractSearchResults: boolean;
+  canExtractSelectedFare: boolean;
+  canObserveRepricing: boolean;
+  canBuildDeepLink: boolean;
+  canCheckCheckoutStage: boolean;
+  requiresManualInteraction: boolean;
+}
+```
+
+---
+
+# 14. BookWithMatrix integration
+
+BookWithMatrix should be treated as a handoff and reconstruction channel, not automatically as the ultimate source of truth.
+
+Support these workflows:
+
+1. Read an ITA/BookWithMatrix JSON payload.
+2. Generate or open the most precise BookWithMatrix handoff possible.
+3. Capture any retailer links it produces.
+4. Track which marketing carrier, operating carrier, booking class, fare basis, and price survive the handoff.
+5. Open resulting retailers in controlled tabs.
+6. compare each retailer’s result independently;
+7. do not collapse all retailers into one observation.
+
+A verification chain should look like:
+
+```text
+ITA Matrix
+  → BookWithMatrix
+    → Retailer A
+    → Retailer B
+    → Airline direct
+```
+
+Store each transition:
+
+```ts
+interface VerificationHop {
+  fromSite: string;
+  toSite: string;
+  openedAt: string;
+  sourceUrl: string;
+  destinationUrl: string;
+  preservedFields: string[];
+  lostFields: string[];
+  resultingObservationId?: string;
+}
+```
+
+Display exactly where the price or itinerary diverged.
+
+Example:
+
+```text
+ITA: CAD 1,313.67
+BookWithMatrix handoff: CAD 1,313.67 metadata preserved
+Retailer landing page: search reconstructed
+Retailer results: CAD 2,586.22
+Divergence: WS 5943 replaced with DE 2455
+Fare basis DZ0D0HNS no longer present
+```
+
+---
+
+# 15. Dynamic-page observation
+
+Modern booking pages often update without full navigation.
+
+Implement:
+
+* `MutationObserver`;
+* route-change detection;
+* `history.pushState` and `history.replaceState` awareness where appropriate;
+* debounced extraction;
+* duplicate-observation suppression;
+* page-stability detection;
+* loading-state awareness;
+* stale-result detection.
+
+Do not extract continuously on every DOM mutation.
+
+Use a pipeline such as:
+
+```text
+DOM mutation
+→ debounce
+→ detect relevant region changed
+→ wait for result stability
+→ extract
+→ normalize
+→ hash
+→ compare against last observation
+→ publish only if materially different
+```
+
+---
+
+# 16. Side-panel product design
+
+Use the Chrome side panel as the primary interface.
+
+The side panel should remain useful as the user navigates among ITA, BookWithMatrix, airlines, and OTAs.
+
+Create these views:
+
+## 16.1 Live page intelligence
+
+At the top:
+
+```text
+Current page: Condor
+Detected: YVR → FRA
+Date: Sep 17, 2026
+Results: 18
+Relevant watches: 2
+Best match: 89%
+```
+
+Show a live comparison when a relevant itinerary is present.
+
+## 16.2 Active watches
+
+Each watch card should show:
+
+* route;
+* date;
+* cabin;
+* original price;
+* best verified price;
+* best confidence;
+* deepest verification stage;
+* marketing and operating flights;
+* last checked;
+* next due;
+* status;
+* quick actions.
+
+Example:
+
+```text
+YVR → FRA
+Sep 17, 2026 · Business · Nonstop
+
+ITA target              CAD 1,313.67
+Best reproduced         CAD 1,318.42
+Difference              +CAD 4.75
+Confidence              91%
+Stage                   Passenger details reached
+
+WS 5943 / DE 2455
+D class · DZ0D0HNS
+
+[Open match] [Verify now] [Evidence]
+```
+
+## 16.3 Observation timeline
+
+Show a chronological forensic timeline:
+
+```text
+12:31:04  ITA fare captured at CAD 1,313.67
+12:31:22  BookWithMatrix handoff opened
+12:31:40  Retailer A returned CAD 2,568.20
+12:32:11  WestJet showed no matching result
+12:36:54  Retailer B reproduced CAD 1,318.42
+12:37:20  Fare survived itinerary selection
+12:37:48  Passenger-details stage reached
+12:37:49  High-confidence alert sent
+```
+
+## 16.4 Mismatch inspector
+
+Display a field-by-field table:
+
+| Field            | ITA target   | Retailer     | Status           |
+| ---------------- | ------------ | ------------ | ---------------- |
+| Date             | Sep 17       | Sep 17       | Match            |
+| Marketing flight | WS 5943      | DE 2455      | Different        |
+| Operating flight | DE 2455      | DE 2455      | Match            |
+| Cabin            | Business     | Business     | Match            |
+| Booking class    | D            | Unknown      | Unconfirmed      |
+| Fare basis       | DZ0D0HNS     | Unknown      | Unconfirmed      |
+| Price            | CAD 1,313.67 | CAD 1,318.42 | Within tolerance |
+
+## 16.5 Evidence viewer
+
+Allow me to inspect:
+
+* normalized JSON;
+* original imported JSON;
+* extracted fields and provenance;
+* screenshots or text snapshots where captured with explicit user action;
+* comparison result;
+* retailer URL;
+* timestamps;
+* error messages.
+
+Add copy buttons for:
+
+* normalized itinerary;
+* ITA fare construction;
+* agent request;
+* troubleshooting report.
+
+---
+
+# 17. On-page overlay
+
+On supported pages, provide an unobtrusive overlay.
+
+On ITA:
+
+```text
+FareProof
+CAD 1,313.67 · Business
+WS 5943 / DE 2455
+
+[Watch and verify]
+```
+
+On retailer result pages:
+
+```text
+FareProof — Watch Match
+
+91% strong match
+Retailer: CAD 1,318.42
+Target: CAD 1,313.67
+
+Same physical flight
+Same cabin
+Marketing carrier differs
+
+[Open comparison]
+```
+
+Use Shadow DOM to isolate styles from the host page.
+
+Allow overlays to be disabled globally or per site.
+
+---
+
+# 18. Notifications
+
+Use Chrome desktop notifications.
+
+Notification types:
+
+## Exact-price match
+
+```text
+FareProof: Exact fare reproduced
+
+YVR → FRA · Sep 17 · Business
+CAD 1,313.67 found at [Retailer]
+
+WS 5943 / DE 2455
+Confidence: 96%
+Stage: itinerary selected
+```
+
+## Near-price match
+
+```text
+FareProof: Near match found
+
+Target: CAD 1,313.67
+Found: CAD 1,318.42
+Difference: +CAD 4.75
+
+The fare reached passenger details.
+```
+
+## Reprice alert
+
+```text
+FareProof: Fare repriced
+
+A matching itinerary initially displayed CAD 1,313.67
+but changed to CAD 2,568.20 after selection.
+```
+
+## Interaction-needed alert
+
+```text
+FareProof: Manual verification needed
+
+The retailer requires interaction before FareProof
+can confirm the YVR–FRA result.
+```
+
+Notification actions:
+
+* Open match;
+* View comparison;
+* Snooze;
+* Mark false positive.
+
+Implement deduplication so the same match does not trigger repeated alerts unless:
+
+* the price improves;
+* confidence materially improves;
+* verification reaches a deeper stage;
+* availability disappears and later returns;
+* the configured cooldown expires.
+
+Add optional sound using a packaged local audio file and an appropriate supported extension context.
+
+---
+
+# 19. Alert decision engine
+
+An observation is notification-eligible only when:
+
+```ts
+priceWithinConfiguredTolerance
+&& itineraryPassesHardConstraints
+&& cabinPassesHardConstraints
+&& comparisonScore >= minimumConfidence
+&& verificationStage >= minimumStage
+&& !isDuplicateAlert
+```
+
+Provide separate urgency levels:
+
+* **Critical**: exact/cheaper price and deep verification;
+* **High**: near price with strong itinerary match;
+* **Medium**: search result reproduced but not selected;
+* **Informational**: possible match requiring manual verification.
+
+Allow me to configure which urgency levels trigger desktop notifications.
+
+---
+
+# 20. Scheduled checks and resource control
+
+Implement a scheduler that respects browser and site constraints.
+
+Requirements:
+
+* one central alarm dispatcher;
+* persist next-due times;
+* avoid one Chrome alarm per observation;
+* process only a small batch per cycle;
+* maximum one active verification tab per domain;
+* configurable global concurrency;
+* configurable domain cooldown;
+* random jitter;
+* exponential backoff;
+* pause when offline;
+* retry transient network failures;
+* do not retry authentication or CAPTCHA failures automatically;
+* close extension-created tabs only when safe;
+* never close tabs opened manually by the user;
+* mark every tab with ownership metadata.
+
+Suggested statuses:
+
+```ts
+type CheckStatus =
+  | "scheduled"
+  | "running"
+  | "completed"
+  | "no-match"
+  | "reprice"
+  | "blocked"
+  | "captcha"
+  | "login-required"
+  | "manual-action-required"
+  | "rate-limited"
+  | "site-structure-changed"
+  | "network-error"
+  | "unsupported";
+```
+
+Make it clear in the UI that automatic checks work only while Chrome and the extension can run; this is not a cloud service.
+
+---
+
+# 21. Reliability and self-diagnostics
+
+Build a diagnostics system from the start.
+
+Each adapter must report:
+
+* adapter version;
+* page type;
+* extraction strategy used;
+* selectors or semantic anchors attempted;
+* fields found;
+* fields missing;
+* parse errors;
+* timing;
+* whether the page was stable;
+* whether a login, CAPTCHA, consent dialog, or locale prompt interfered.
+
+Create a health dashboard:
+
+```text
+ITA Matrix adapter       Healthy
+BookWithMatrix adapter   Healthy
+WestJet adapter          Degraded
+Condor adapter           Site changed
+Generic OTA adapter      Healthy
+```
+
+For a degraded adapter, offer:
+
+* “Capture diagnostic snapshot”
+* “Copy diagnostic report”
+* “Disable automatic use”
+* “Use manual import”
+
+A diagnostic snapshot must redact:
+
+* passenger names;
+* email addresses;
+* loyalty numbers;
+* payment details;
+* session tokens;
+* cookies;
+* authentication headers;
+* unrelated page content.
+
+---
+
+# 22. Privacy and security
+
+This is a private extension, but still implement strong security.
+
+Requirements:
+
+* least-privilege permissions;
+* narrowly scoped host permissions;
+* optional host permissions for newly enabled sites when practical;
+* no `eval`;
+* no remotely hosted executable scripts;
+* no transmission of browsing data;
+* no analytics;
+* no telemetry;
+* no passwords;
+* no cookie export;
+* no payment-data access;
+* no reading unrelated pages;
+* no capturing full-page content unless explicitly requested;
+* no logging sensitive query strings without redaction;
+* sanitize all HTML;
+* treat website content as untrusted;
+* validate every message payload;
+* verify message sender and origin;
+* use CSP-compatible code;
+* use `textContent`, not unsafe HTML injection;
+* escape imported JSON when rendered;
+* cap imported payload size;
+* protect against prototype pollution;
+* cap observation history and raw-evidence storage.
+
+Create a privacy page that states:
+
+```text
+FareProof runs locally in your browser.
+It does not send your fare searches or browsing history
+to a FareProof server.
+```
+
+---
+
+# 23. Permissions strategy
+
+Begin with the smallest reasonable permission set:
+
+```json
+{
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "tabs",
+    "scripting",
+    "sidePanel"
+  ]
+}
+```
+
+Use host permissions only for supported sites.
+
+Do not request `<all_urls>` unless no narrower architecture is possible, and document why before doing so.
+
+Prefer optional access for sites that the user explicitly enables.
+
+Create a settings screen listing:
+
+* enabled site;
+* granted permission;
+* adapter health;
+* automatic checking enabled;
+* last access;
+* revoke button.
+
+---
+
+# 24. Storage model
+
+Use `chrome.storage.local` for:
+
+* settings;
+* watch metadata;
+* adapter configuration;
+* scheduler state;
+* alert deduplication state;
+* lightweight current summaries.
+
+Use IndexedDB for:
+
+* complete observations;
+* comparison history;
+* raw imported JSON;
+* sanitized evidence;
+* verification hops;
+* diagnostic reports.
+
+Suggested stores:
+
+```text
+watches
+observations
+comparisons
+verificationHops
+rawEvidence
+adapterHealth
+diagnostics
+alertHistory
+```
+
+Implement:
+
+* schema versioning;
+* migrations;
+* transactional writes;
+* data retention settings;
+* export;
+* import;
+* delete-all-data;
+* delete-one-watch and all associated records.
+
+---
+
+# 25. Watch state machine
+
+Use an explicit state machine.
+
+```text
+Captured
+  ↓
+PendingVerification
+  ↓
+Checking
+  ├─ NoMatch
+  ├─ PossibleMatch
+  ├─ StrongMatch
+  ├─ ExactMatch
+  ├─ Repriced
+  ├─ ManualActionRequired
+  ├─ Blocked
+  └─ AdapterFailure
+```
+
+A watch can return to `Checking` later.
+
+Keep:
+
+* current state;
+* best-ever match;
+* latest match;
+* lowest observed price;
+* deepest verification stage;
+* last successful verification;
+* consecutive failures;
+* next scheduled attempt.
+
+Do not overwrite the best historical result when a later check fails.
+
+---
+
+# 26. Manual verification assistant
+
+For cases where automation cannot confirm the fare, create a high-value manual mode.
+
+Generate a copyable request such as:
+
+```text
+Please price and attempt to sell one adult, one-way,
+YVR to FRA on September 17, 2026.
+
+Marketing flight: WS 5943
+Operating flight: DE 2455
+Cabin: Business
+Booking class: D
+Fare basis: DZ0D0HNS
+Target total: CAD 1,313.67
+Point of sale: Canada
+Preferred validating carrier: WestJet
+
+Please confirm whether D inventory and fare basis
+DZ0D0HNS are currently sellable and ticketable.
+```
+
+Generate variants for:
+
+* airline phone agent;
+* travel agent;
+* GDS-capable agent;
+* chat support.
+
+Also show what evidence is still missing.
+
+---
+
+# 27. Failure analysis
+
+When a result fails, classify the likely cause:
+
+* fare no longer available;
+* booking class unavailable;
+* codeshare inventory mismatch;
+* marketing flight substituted;
+* validating carrier changed;
+* point-of-sale mismatch;
+* currency conversion difference;
+* OTA fee added;
+* passenger-count mismatch;
+* fare basis lost;
+* result repriced after selection;
+* stale search result;
+* checkout validation failure;
+* adapter could not extract enough data;
+* website blocked automated navigation;
+* login required;
+* CAPTCHA required;
+* unknown.
+
+Do not present speculation as fact.
+
+Use phrasing such as:
+
+```text
+Likely cause: marketing-carrier substitution
+Evidence: WS 5943 was replaced by DE 2455 during handoff.
+Fare basis was not reproduced.
+```
+
+---
+
+# 28. False-positive protection
+
+The extension must be conservative.
+
+Never notify as a strong match when:
+
+* the displayed cabin applies only to a short segment;
+* the transatlantic segment is economy;
+* the price is a monthly payment or deposit;
+* the amount excludes mandatory taxes;
+* the price is for a child or special passenger type;
+* the price is per direction of a required round trip;
+* the price is in another currency misread as CAD;
+* the result date differs because of timezone parsing;
+* the flight number belongs to a different day;
+* the site shows “from” pricing;
+* the fare is waitlisted;
+* the result has already repriced;
+* the retailer result is stale;
+* the itinerary is mixed cabin and violates the watch rule.
+
+Add explicit detectors for:
+
+* “from”;
+* “starting at”;
+* “per month”;
+* “excluding taxes”;
+* “member price”;
+* “round trip required”;
+* “sold out”;
+* “unavailable”;
+* “price changed”;
+* “mixed cabin.”
+
+---
+
+# 29. Currency handling
+
+Do not compare formatted currency strings directly.
+
+Normalize currency and minor units.
+
+Keep:
+
+* source currency;
+* source amount;
+* converted amount, if shown;
+* conversion rate;
+* rate timestamp;
+* conversion source;
+* whether conversion was performed by the retailer or by FareProof.
+
+By default, alert only on original-currency comparisons.
+
+If a retailer displays another currency, classify the price as provisional unless:
+
+* the conversion source is known;
+* the user enables cross-currency comparison;
+* the conversion tolerance accounts for exchange-rate movement and card fees.
+
+Never silently treat USD 1,313 as CAD 1,313.
+
+---
+
+# 30. Testing strategy
+
+Write extensive tests.
+
+## Unit tests
+
+Test:
+
+* money parsing;
+* CAD formatting;
+* European number formats;
+* itinerary fingerprints;
+* codeshare comparison;
+* fare-basis comparison;
+* cabin normalization;
+* mixed-cabin detection;
+* date and timezone handling;
+* tolerance calculations;
+* passenger-count matching;
+* alert deduplication;
+* scoring;
+* hard mismatch rules;
+* state-machine transitions;
+* storage migrations.
+
+## Fixture tests
+
+Create sanitized HTML and JSON fixtures for:
+
+* ITA Matrix result;
+* supplied WS/DE example;
+* BookWithMatrix handoff;
+* WestJet result;
+* Condor result;
+* exact match;
+* near-price match;
+* different marketing carrier;
+* incorrect cabin;
+* repricing;
+* no availability;
+* fare basis absent;
+* changed DOM;
+* currency mismatch.
+
+Use this supplied fare as an important fixture:
+
+```json
+{
+  "route": "YVR-FRA",
+  "date": "2026-09-17",
+  "marketingCarrier": "WS",
+  "marketingFlightNumber": "5943",
+  "operatingCarrier": "DE",
+  "operatingFlightNumber": "2455",
+  "bookingClass": "D",
+  "cabin": "BUSINESS",
+  "fareBasis": "DZ0D0HNS",
+  "currency": "CAD",
+  "total": 1313.67
+}
+```
+
+## Integration tests
+
+Test:
+
+* content-script to service-worker messaging;
+* watch creation;
+* passive page observation;
+* scheduled-check dispatch;
+* tab ownership;
+* notification eligibility;
+* side-panel updates;
+* adapter failure recovery.
+
+## End-to-end tests
+
+Where live-site testing is unsuitable, create local mock pages that mimic:
+
+* delayed results;
+* dynamic repricing;
+* codeshare substitution;
+* checkout-stage navigation;
+* CAPTCHA detection;
+* page-structure changes.
+
+---
+
+# 31. Development fixtures and simulation lab
+
+Create an internal route available only in development:
+
+```text
+/dev/simulator
+```
+
+It should simulate:
+
+* exact match;
+* price reduction;
+* near match;
+* different codeshare;
+* wrong cabin;
+* mixed cabin;
+* repricing after click;
+* passenger-details success;
+* blocked page;
+* CAPTCHA;
+* adapter breakage.
+
+The simulator should let the developer trigger notifications and state changes without hitting real travel websites.
+
+---
+
+# 32. Logging
+
+Create structured local logs.
+
+```ts
+interface LogEvent {
+  timestamp: string;
+  level: "debug" | "info" | "warn" | "error";
+  component: string;
+  watchId?: string;
+  adapterId?: string;
+  event: string;
+  details?: Record<string, unknown>;
+}
+```
+
+Logs must:
+
+* be local;
+* redact sensitive values;
+* have configurable verbosity;
+* rotate automatically;
+* be exportable as JSON;
+* contain correlation IDs for verification runs.
+
+Do not log full cookies, tokens, payment fields, or unrelated page content.
+
+---
+
+# 33. User settings
+
+Create a polished settings page.
+
+Sections:
+
+## General
+
+* enable extension;
+* open side panel automatically on supported pages;
+* show on-page overlays;
+* notification sound;
+* default currency;
+* timezone;
+* retain history for X days.
+
+## Matching
+
+* default price tolerance;
+* require same marketing carrier;
+* permit codeshare substitution;
+* require same booking class;
+* require same fare basis;
+* minimum confidence;
+* minimum verification stage.
+
+## Scheduling
+
+* enabled;
+* default interval;
+* active hours;
+* maximum concurrent checks;
+* maximum background tabs;
+* per-site cooldown;
+* pause on metered connection, where detectable.
+
+## Sites
+
+* enabled adapters;
+* permissions;
+* adapter health;
+* automatic versus manual mode.
+
+## Privacy
+
+* export data;
+* import data;
+* delete history;
+* delete all data;
+* show granted permissions.
+
+## Developer
+
+* diagnostic mode;
+* adapter traces;
+* simulator;
+* fixture import;
+* reset adapter health.
+
+---
+
+# 34. Import and export
+
+Support exporting one watch as a portable JSON bundle:
+
+```ts
+interface FareProofExport {
+  schemaVersion: number;
+  exportedAt: string;
+  watch: FareWatch;
+  observations: ObservedItinerary[];
+  comparisons: ComparisonResult[];
+  verificationHops: VerificationHop[];
+}
+```
+
+Support:
+
+* export one watch;
+* export all watches;
+* import watch;
+* detect duplicates;
+* migrate older schemas;
+* redact raw evidence optionally.
+
+Also create a concise human-readable Markdown report.
+
+Example:
+
+```markdown
+# FareProof Report
+
+## Target
+YVR → FRA
+September 17, 2026
+Business
+WS 5943 operated by DE 2455
+D class / DZ0D0HNS
+CAD 1,313.67
+
+## Best verification
+Retailer B
+CAD 1,318.42
+91% confidence
+Passenger-details stage reached
+
+## Differences
+- Marketing flight displayed as DE 2455
+- Fare basis unavailable
+- Total difference: CAD 4.75
+```
+
+---
+
+# 35. Build and installation experience
+
+Provide:
+
+* complete source code;
+* no pseudocode in production files;
+* a clear README;
+* installation steps;
+* build commands;
+* development commands;
+* test commands;
+* troubleshooting;
+* architecture diagram;
+* permissions explanation;
+* adapter-development guide;
+* privacy description.
+
+Expected commands:
+
+```bash
+npm install
+npm run dev
+npm run build
+npm run test
+npm run test:e2e
+npm run lint
+npm run typecheck
+```
+
+Installation documentation:
+
+1. Build the extension.
+2. Open `chrome://extensions`.
+3. Enable Developer mode.
+4. Select **Load unpacked**.
+5. Choose the generated `dist` directory.
+6. Pin FareProof.
+7. Grant access only to desired travel sites.
+8. Open ITA Matrix.
+9. Select an itinerary.
+10. Click **Watch and verify this fare**.
+
+---
+
+# 36. Manifest requirements
+
+Generate a valid Manifest V3 manifest.
+
+Include:
+
+* service worker;
+* content scripts for supported hosts;
+* side panel;
+* options page;
+* action popup or action behavior;
+* icons;
+* CSP;
+* minimal permissions;
+* narrowly scoped host permissions;
+* web-accessible resources only when essential.
+
+Keep the manifest generated or maintained in a clear, auditable way.
+
+---
+
+# 37. Implementation phases
+
+Implement in these phases.
+
+## Phase 1: Foundation
+
+* project scaffolding;
+* manifest;
+* service worker;
+* message bus;
+* storage repositories;
+* side panel;
+* settings;
+* domain model;
+* JSON import.
+
+## Phase 2: ITA intelligence
+
+* ITA DOM detection;
+* structured-data extraction;
+* mutation observation;
+* fare-watch creation;
+* supplied YVR–FRA fixture.
+
+## Phase 3: Comparison engine
+
+* fingerprints;
+* codeshare-aware matching;
+* fare comparison;
+* price tolerance;
+* explainable score;
+* hard mismatch logic.
+
+## Phase 4: Passive verification
+
+* BookWithMatrix;
+* WestJet;
+* Condor;
+* generic adapters;
+* live side-panel comparisons;
+* overlays.
+
+## Phase 5: Guided verification
+
+* deep-link builders;
+* owned-tab tracking;
+* stage observation;
+* repricing detection;
+* verification hops.
+
+## Phase 6: Scheduling and notifications
+
+* due-watch scheduler;
+* rate limiting;
+* backoff;
+* alert eligibility;
+* notification deduplication.
+
+## Phase 7: Reliability
+
+* adapter health;
+* diagnostics;
+* simulator;
+* fixture tests;
+* storage migrations;
+* data export.
+
+Complete each phase with tests before proceeding.
+
+---
+
+# 38. Definition of done
+
+The first usable release is complete when I can:
+
+1. load the extension unpacked;
+2. open ITA Matrix;
+3. capture the supplied YVR–FRA business fare;
+4. see:
+
+   * WS 5943;
+   * DE 2455;
+   * D class;
+   * DZ0D0HNS;
+   * CAD 1,313.67;
+5. create a watch;
+6. paste the same JSON manually as a fallback;
+7. open a verification search;
+8. detect a matching or mismatching retailer result;
+9. understand exactly why it matched or failed;
+10. receive one deduplicated notification for an eligible match;
+11. open the retailer from the notification;
+12. inspect the complete evidence timeline;
+13. export the watch and evidence;
+14. see no TypeScript errors;
+15. pass unit and integration tests;
+16. operate without transmitting my browsing data to an external FareProof server.
+
+---
+
+# 39. Quality bar
+
+Do not build a shallow proof of concept.
+
+Avoid:
+
+* giant files;
+* untyped message payloads;
+* brittle selectors scattered throughout the code;
+* hidden global state;
+* unpersisted service-worker assumptions;
+* price-only matching;
+* false “bookable” claims;
+* uncontrolled tab creation;
+* unlimited polling;
+* broad host permissions;
+* silent failures;
+* hard-coded CAD-only logic;
+* coupling the entire extension to ITA’s current DOM;
+* storing sensitive browsing data unnecessarily.
+
+Prefer:
+
+* explicit contracts;
+* typed schemas;
+* adapter isolation;
+* provenance;
+* deterministic comparison;
+* explainable decisions;
+* conservative confidence;
+* persistent state;
+* graceful degradation;
+* manual fallbacks;
+* actionable diagnostics.
+
+---
+
+# 40. Final delivery instructions
+
+Before writing code:
+
+1. produce the proposed repository tree;
+2. define the domain model;
+3. define the message protocol;
+4. define adapter capabilities;
+5. define the storage schema;
+6. define the state machine;
+7. identify browser limitations;
+8. list security and privacy decisions;
+9. identify which actions require user interaction.
+
+Then implement the project phase by phase.
+
+For every completed phase, provide:
+
+* files created or modified;
+* architectural decisions;
+* commands to run;
+* tests added;
+* known limitations;
+* next phase.
+
+When assumptions are necessary, choose a reasonable default and document it rather than leaving the implementation incomplete.
+
+The finished extension must be useful even when automated verification is blocked. In those cases, it should still capture the ITA fare perfectly, construct targeted searches, detect matches on pages I open, explain differences, preserve evidence, and alert me immediately once a credible matching fare appears.

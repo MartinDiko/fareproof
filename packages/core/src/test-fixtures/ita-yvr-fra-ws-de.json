@@ -1,0 +1,37 @@
+{
+  "ext": { "totalPrice": "CAD2627.34" },
+  "itinerary": {
+    "slices": [
+      {
+        "origin": { "code": "YVR", "name": "Vancouver International" },
+        "destination": { "code": "FRA", "name": "Frankfurt International" },
+        "ext": { "warnings": "OVERNIGHT" },
+        "segments": [
+          {
+            "bookingInfos": [{ "bookingCode": "D", "cabin": "BUSINESS" }],
+            "carrier": { "code": "WS", "shortName": "WestJet" },
+            "origin": { "code": "YVR", "name": "Vancouver International" },
+            "destination": { "code": "FRA", "name": "Frankfurt International" },
+            "flight": { "number": 5943 },
+            "departure": "2026-09-17T17:50-07:00",
+            "arrival": "2026-09-18T12:45+02:00",
+            "duration": 595,
+            "operationalFlight": { "number": 2455, "carrier": { "code": "DE", "shortName": "Condor" } },
+            "legs": [{ "departure": "2026-09-17T17:50-07:00", "arrival": "2026-09-18T12:45+02:00", "duration": 595, "aircraft": { "shortName": "Airbus A330-900neo" } }]
+          }
+        ]
+      }
+    ]
+  },
+  "pricings": [{ "ext": { "pax": { "adults": 2 }, "totalPrice": "CAD1313.67" } }],
+  "tickets": [{
+    "pricings": [{
+      "fareCalculations": [{ "lines": ["YVR WS FRA 892.09DZ0D0HNS NUC 892.09 END ROE 1.392224 XT 34.42CA 26.25W1 11.00YQ"] }],
+      "fares": [{ "bookingInfos": [{ "segment": { "origin": "YVR", "destination": "FRA" }, "bookingCode": "D", "cabin": "BUSINESS" }], "ptcs": ["ADT"], "carrier": "WS", "code": "DZ0D0HNS" }],
+      "notes": ["Changes to this ticket will incur a penalty fee."]
+    }]
+  }],
+  "displayTotal": "CAD2627.34",
+  "id": "0g9ItYV1Og0OJ1USppUDyO001",
+  "passengerCount": 2
+}

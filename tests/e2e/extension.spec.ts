@@ -32,6 +32,12 @@ function matrixSearchPage(): string {
   </body></html>`;
 }
 
+function retailerLoadingThenPricePage(): string {
+  const fixture = readFileSync(path.join(fixtures, 'retailer-result.html'), 'utf8').replace('CAD 1,318.42 per person', 'CAD 1,500.00 per person');
+  const resultBody = /<body>([\s\S]*)<\/body>/.exec(fixture)?.[1] ?? fixture;
+  return `<!doctype html><html><head><title>Checking fare</title></head><body><main>Checking current agency price...</main><script>setTimeout(() => { document.body.innerHTML = ${JSON.stringify(resultBody)}; }, 2_200);</script></body></html>`;
+}
+
 test('runs Matrix through BookWithMatrix and validates the retailer', async () => {
   test.setTimeout(60_000);
   const context = await chromium.launchPersistentContext('', {
@@ -134,7 +140,7 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
     const verificationPage = await verificationPagePromise;
     await verificationPage.route('https://matrix.itasoftware.com/**', routeMatrix);
     await verificationPage.route('https://bookwithmatrix.com/**', routeBookWithMatrix);
-    await verificationPage.route('https://www.onetravel.com/**', (route) => route.request().resourceType() === 'document' ? route.fulfill({ contentType: 'text/html', body: readFileSync(path.join(fixtures, 'retailer-result.html'), 'utf8') }) : route.continue());
+    await verificationPage.route('https://www.onetravel.com/**', (route) => route.request().resourceType() === 'document' ? route.fulfill({ contentType: 'text/html', body: retailerLoadingThenPricePage() }) : route.continue());
     await verificationPage.goto('https://matrix.itasoftware.com/search');
     await expect.poll(() => calendarRequests).toBe(1);
     await expect(verificationPage.locator('#fareproof-overlay-host[data-status="matrix-loading"]')).toBeAttached();
@@ -145,26 +151,32 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
       return { state: status?.state, message: status?.message, stage: stored['fareproof.activeVerificationRun']?.stage };
     }), { timeout: 45_000 }).toMatchObject({ state: 'retailer-match' });
     await expect(policy.getByText('retailer match')).toBeVisible();
-    await expect(policy.getByText(/OneTravel reproduced the route, date, flight, cabin, and price/)).toBeVisible();
-    await expect(evidencePanel.locator('.evidence-stage')).toHaveText('Retailer validated');
+    await expect(policy.getByText(/OneTravel confirms CAD 1500\.00 per person; Matrix showed CAD 1313\.67/)).toBeVisible();
+    await expect(evidencePanel.locator('.evidence-stage')).toHaveText('Agency price validated');
     await expect(evidencePanel.getByText('YVR → FRA', { exact: true })).toBeVisible();
     await expect(evidencePanel.getByText('2026-09-17 · BUSINESS', { exact: true })).toBeVisible();
     await expect(evidencePanel.getByText('Fare 1 · YVR to FRA one way', { exact: true })).toBeVisible();
+    await expect(evidencePanel.getByText(/1,500\.00/)).toBeVisible();
     await expect(evidencePanel.getByText(/1,318\.42/)).toBeVisible();
-    await expect(evidencePanel.getByText(/2,636\.84/)).toBeVisible();
+    await expect(evidencePanel.getByText(/1,313\.67/)).toBeVisible();
+    await expect(evidencePanel.getByText(/186\.33 above Matrix/)).toBeVisible();
+    await expect(evidencePanel.getByText(/3,000\.00/)).toBeVisible();
     await expect(evidencePanel.getByText(/WS 5943 operated by DE 2455/)).toBeVisible();
     await expect(evidencePanel.getByText(/DZ0D0HNS/)).toBeVisible();
     await expect(evidencePanel.getByText('OneTravel', { exact: true })).toBeVisible();
     const confirmedRules = evidencePanel.locator('.evidence-rules.match');
-    await expect(confirmedRules).toContainText('retailer route');
-    await expect(confirmedRules).toContainText('retailer travel date');
-    await expect(confirmedRules).toContainText('retailer flight identity');
-    await expect(confirmedRules).toContainText('retailer long-leg cabin');
-    await expect(confirmedRules).toContainText('retailer price');
+    await expect(confirmedRules).toContainText('agency route');
+    await expect(confirmedRules).toContainText('agency travel date');
+    await expect(confirmedRules).toContainText('agency flight identity');
+    await expect(confirmedRules).toContainText('agency long-leg cabin');
+    await expect(confirmedRules).toContainText('agency price');
     const bookingLink = evidencePanel.getByRole('link', { name: /Open booking site · OneTravel/ });
     await expect(bookingLink).toHaveAttribute('href', /https:\/\/www\.onetravel\.com\//);
     const stored = await page.evaluate(async () => chrome.storage.local.get(['fareproof.policyObservations', 'fareproof.activeVerificationRun']));
-    expect(stored['fareproof.policyObservations']).toEqual(expect.arrayContaining([expect.objectContaining({ policyId: 'fare-1-yvr-fra-one-way', stage: 'retailer-result-reproduced', retailer: 'OneTravel', pricePerPersonMinor: 131_842 })]));
+    expect(stored['fareproof.policyObservations']).toEqual(expect.arrayContaining([
+      expect.objectContaining({ policyId: 'fare-1-yvr-fra-one-way', stage: 'retailer-result-reproduced', retailer: 'OneTravel', pricePerPersonMinor: 150_000, retailerPricePerPersonMinor: 150_000, bookWithMatrixPricePerPersonMinor: 131_842 }),
+      expect.objectContaining({ policyId: 'fare-1-yvr-fra-one-way', stage: 'bookwithmatrix-handoff', matchedRules: ['agency booking links found'], missingRules: expect.arrayContaining(['retailer price']) }),
+    ]));
     expect(stored['fareproof.activeVerificationRun']).toBeNull();
     expect(calendarRequests).toBe(2);
     const notifications = await page.evaluate(async () => chrome.notifications.getAll());

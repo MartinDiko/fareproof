@@ -10,6 +10,10 @@ export interface FareEvidenceView {
   fareIdentity: string;
   totalMinor: number;
   perPersonMinor: number;
+  matrixPricePerPersonMinor: number;
+  bookWithMatrixPricePerPersonMinor?: number;
+  retailerPricePerPersonMinor?: number;
+  priceDifferenceMinor?: number;
   currency: string;
   passengers: number;
   source: string;
@@ -20,7 +24,10 @@ export interface FareEvidenceView {
   observedAt: string;
   matchedRules: string[];
   missingRules: string[];
+  failedRules: string[];
+  message?: string;
   bookingUrl?: string;
+  reviewUrl?: string;
 }
 
 function passengerCount(itinerary: ObservedItinerary): number {
@@ -53,11 +60,16 @@ function formatFareIdentity(itinerary: ObservedItinerary): string {
 
 function stageDetails(observation?: PolicyObservation): Pick<FareEvidenceView, 'stageLabel' | 'stageTone'> {
   if (!observation) return { stageLabel: 'ITA fare captured', stageTone: 'neutral' };
-  if (observation.stage === 'retailer-result-reproduced' && observation.missingRules.length === 0) {
-    return { stageLabel: 'Retailer validated', stageTone: 'success' };
+  const failedRules = observation.failedRules ?? [];
+  if (observation.stage === 'retailer-result-reproduced' && observation.missingRules.length === 0 && failedRules.length === 0) {
+    return { stageLabel: 'Agency price validated', stageTone: 'success' };
   }
   if (observation.stage === 'bookwithmatrix-handoff') {
-    return { stageLabel: observation.missingRules.length ? 'Manual verification needed' : 'BookWithMatrix accepted', stageTone: 'warning' };
+    return { stageLabel: observation.missingRules.includes('supported agency booking link') ? 'No agency link available' : 'Checking agency prices', stageTone: 'warning' };
+  }
+  if (observation.stage === 'manual-confirmation-required' && observation.retailer) {
+    if (failedRules.includes('retailer price')) return { stageLabel: 'Agency price did not qualify', stageTone: 'warning' };
+    return { stageLabel: failedRules.length ? 'Agency result did not match' : 'Agency verification incomplete', stageTone: 'warning' };
   }
   if (observation.stage === 'manual-confirmation-required') return { stageLabel: 'Manual verification needed', stageTone: 'warning' };
   return { stageLabel: 'ITA policy evidence', stageTone: observation.missingRules.length ? 'warning' : 'neutral' };
@@ -69,10 +81,19 @@ export function buildFareEvidenceView(
   policies: FareSearchPolicy[],
 ): FareEvidenceView {
   const passengers = passengerCount(itinerary);
+  const pricedPassengers = Math.max(1, itinerary.passengers.adults);
   const stage = stageDetails(observation);
-  const isValidated = observation?.stage === 'retailer-result-reproduced' && observation.missingRules.length === 0;
+  const failedRules = observation?.failedRules ?? [];
+  const matrixPricePerPersonMinor = Math.round(itinerary.fare.total.amountMinor / pricedPassengers);
+  const retailerPricePerPersonMinor = observation?.retailerPricePerPersonMinor
+    ?? (observation?.stage === 'retailer-result-reproduced' ? observation.pricePerPersonMinor : undefined);
+  const isValidated = observation?.stage === 'retailer-result-reproduced'
+    && observation.missingRules.length === 0
+    && failedRules.length === 0
+    && retailerPricePerPersonMinor !== undefined;
   const bookingUrl = isValidated && observation.url.startsWith('https://') ? observation.url : undefined;
-  const perPersonMinor = observation?.pricePerPersonMinor ?? Math.round(itinerary.fare.total.amountMinor / Math.max(1, passengers));
+  const reviewUrl = observation?.retailer && !isValidated && observation.url.startsWith('https://') ? observation.url : undefined;
+  const perPersonMinor = retailerPricePerPersonMinor ?? matrixPricePerPersonMinor;
   const first = itinerary.segments[0];
   const last = itinerary.segments.at(-1);
   return {
@@ -82,8 +103,12 @@ export function buildFareEvidenceView(
     cabin: formatCabin(itinerary),
     flights: formatFlights(itinerary),
     fareIdentity: formatFareIdentity(itinerary),
-    totalMinor: observation ? perPersonMinor * passengers : itinerary.fare.total.amountMinor,
+    totalMinor: retailerPricePerPersonMinor === undefined ? itinerary.fare.total.amountMinor : perPersonMinor * pricedPassengers,
     perPersonMinor,
+    matrixPricePerPersonMinor,
+    bookWithMatrixPricePerPersonMinor: observation?.bookWithMatrixPricePerPersonMinor,
+    retailerPricePerPersonMinor,
+    priceDifferenceMinor: retailerPricePerPersonMinor === undefined ? undefined : retailerPricePerPersonMinor - matrixPricePerPersonMinor,
     currency: itinerary.fare.total.currency,
     passengers,
     source: observation?.retailer ?? itinerary.sourceSite,
@@ -94,7 +119,10 @@ export function buildFareEvidenceView(
     observedAt: observation?.observedAt ?? itinerary.observedAt,
     matchedRules: observation?.matchedRules ?? [],
     missingRules: observation?.missingRules ?? [],
+    failedRules,
+    message: observation?.message,
     bookingUrl,
+    reviewUrl,
   };
 }
 
@@ -114,6 +142,6 @@ export function latestValidatedEvidence(
   observations: PolicyObservation[],
   policies: FareSearchPolicy[],
 ): FareEvidenceView | null {
-  const observation = observations.find((item) => item.stage === 'retailer-result-reproduced' && item.missingRules.length === 0 && item.url.startsWith('https://'));
+  const observation = observations.find((item) => item.stage === 'retailer-result-reproduced' && item.missingRules.length === 0 && !(item.failedRules?.length) && item.url.startsWith('https://'));
   return observation ? buildFareEvidenceView(observation.itinerary, observation, policies) : null;
 }

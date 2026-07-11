@@ -56,11 +56,17 @@ section { margin-bottom: 20px; }
 .evidence-rules strong { display: flex; align-items: center; gap: 4px; }
 .evidence-rules.match { border-color: var(--cp-success); }
 .evidence-rules.match strong { color: var(--cp-success); }
+.evidence-rules.failed { border-color: var(--cp-danger); }
+.evidence-rules.failed strong { color: var(--cp-danger); }
 .evidence-rules.missing { border-color: var(--cp-warning); }
 .evidence-rules.missing strong { color: var(--cp-warning); }
+.price-difference { display: inline; color: var(--cp-text-muted); font-size: 10px; }
 .evidence-guidance { margin-top: 9px; color: var(--cp-text-muted); font-size: 11px; line-height: 1.4; }
-.booking-link { display: inline-flex; width: 100%; min-height: 36px; align-items: center; justify-content: center; gap: 7px; margin-top: 10px; border-radius: 7px; background: var(--cp-accent); color: var(--cp-accent-fg); font-size: 12px; font-weight: 600; text-decoration: none; }
+.booking-link, .review-link { display: inline-flex; width: 100%; min-height: 36px; align-items: center; justify-content: center; gap: 7px; margin-top: 10px; border-radius: 7px; font-size: 12px; font-weight: 600; text-align: center; text-decoration: none; }
+.booking-link { background: var(--cp-accent); color: var(--cp-accent-fg); }
 .booking-link:hover { background: var(--cp-accent-hover); }
+.review-link { border: 1px solid var(--cp-border-strong); background: var(--cp-surface); color: var(--cp-text); }
+.review-link:hover { border-color: var(--cp-link); color: var(--cp-link); }
 .evidence-empty { display: flex; align-items: center; gap: 8px; color: var(--cp-text-muted); font-size: 11px; }
 .previous-validated { margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--cp-border); }
 .previous-validated h3 { margin-bottom: 9px; font-size: 11px; text-transform: uppercase; }

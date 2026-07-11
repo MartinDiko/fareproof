@@ -24,29 +24,51 @@ describe('buildFareEvidenceView', () => {
       itinerary: { ...itinerary, sourceSite: 'OneTravel', sourceUrl: 'https://www.onetravel.com/book' },
       url: 'https://www.onetravel.com/book',
       retailer: 'OneTravel',
-      pricePerPersonMinor: 131_842,
+      pricePerPersonMinor: 150_000,
+      bookWithMatrixPricePerPersonMinor: 131_842,
+      retailerPricePerPersonMinor: 150_000,
       matchedRules: ['retailer route', 'retailer travel date', 'retailer flight identity', 'retailer long-leg cabin', 'retailer price'],
       missingRules: [],
+      failedRules: [],
     };
     const view = buildFareEvidenceView(observation.itinerary, observation, defaultFareSearchPolicies);
 
-    expect(view).toMatchObject({ stageLabel: 'Retailer validated', retailer: 'OneTravel', bookingUrl: 'https://www.onetravel.com/book', perPersonMinor: 131_842, totalMinor: 263_684 });
+    expect(view).toMatchObject({ stageLabel: 'Agency price validated', retailer: 'OneTravel', bookingUrl: 'https://www.onetravel.com/book', reviewUrl: undefined, perPersonMinor: 150_000, totalMinor: 300_000, matrixPricePerPersonMinor: 131_367, bookWithMatrixPricePerPersonMinor: 131_842, priceDifferenceMinor: 18_633 });
   });
 
-  it('withholds a booking link when validation evidence is incomplete', () => {
+  it('treats BookWithMatrix as a handoff while agency prices are pending', () => {
+    const observation: PolicyObservation = {
+      id: 'bookwithmatrix-result',
+      policyId: 'fare-1-yvr-fra-one-way',
+      observedAt: '2026-07-10T12:30:00Z',
+      stage: 'bookwithmatrix-handoff',
+      itinerary,
+      url: 'https://bookwithmatrix.com/result',
+      pricePerPersonMinor: 131_367,
+      bookWithMatrixPricePerPersonMinor: 131_842,
+      matchedRules: ['agency booking links found'],
+      missingRules: ['retailer price'],
+    };
+
+    expect(buildFareEvidenceView(itinerary, observation, defaultFareSearchPolicies)).toMatchObject({ stageLabel: 'Checking agency prices', stageTone: 'warning', perPersonMinor: 131_367, bookWithMatrixPricePerPersonMinor: 131_842, bookingUrl: undefined, reviewUrl: undefined });
+  });
+
+  it('withholds booking but exposes manual review when the agency price fails', () => {
     const observation: PolicyObservation = {
       id: 'incomplete-result',
       policyId: 'fare-1-yvr-fra-one-way',
       observedAt: '2026-07-10T12:30:00Z',
-      stage: 'retailer-result-reproduced',
+      stage: 'manual-confirmation-required',
       itinerary,
       url: 'https://www.onetravel.com/book',
       retailer: 'OneTravel',
-      pricePerPersonMinor: 131_842,
-      matchedRules: ['retailer route'],
-      missingRules: ['retailer long-leg cabin'],
+      pricePerPersonMinor: 250_000,
+      retailerPricePerPersonMinor: 250_000,
+      matchedRules: ['retailer route', 'retailer travel date', 'retailer flight identity', 'retailer long-leg cabin'],
+      missingRules: [],
+      failedRules: ['retailer price'],
     };
 
-    expect(buildFareEvidenceView(itinerary, observation, defaultFareSearchPolicies).bookingUrl).toBeUndefined();
+    expect(buildFareEvidenceView(itinerary, observation, defaultFareSearchPolicies)).toMatchObject({ stageLabel: 'Agency price did not qualify', perPersonMinor: 250_000, bookingUrl: undefined, reviewUrl: 'https://www.onetravel.com/book', failedRules: ['retailer price'] });
   });
 });

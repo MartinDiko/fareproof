@@ -32,7 +32,11 @@ export function validateRetailerObservation(
   const failedRules: string[] = [];
   const requiredAirports = [...new Set(itinerary.segments.flatMap((segment) => [segment.origin.code, segment.destination.code]))];
   const routeMatches = requiredAirports.every((airport) => observation.airportCodes.includes(airport));
-  (routeMatches ? matchedRules : failedRules).push('retailer route');
+  const observedRequiredAirports = requiredAirports.filter((airport) => observation.airportCodes.includes(airport));
+  const observedAirports = observation.airportCodes.filter((airport) => !['CAD', 'USD', 'EUR', 'GBP'].includes(airport));
+  const enoughRouteEvidence = observedRequiredAirports.length > 0 && observedAirports.length >= requiredAirports.length;
+  const routeRule = routeMatches ? matchedRules : enoughRouteEvidence ? failedRules : missingRules;
+  routeRule.push('retailer route');
 
   const flightTokens = new Set(observation.flightNumbers.map((token) => token.replace(/\s+/g, '').toUpperCase()));
   const segmentIdentityMatches = itinerary.segments.every((segment) => {
@@ -64,9 +68,13 @@ export function validateRetailerObservation(
     amountMinor: price.basis === 'total' ? Math.round(price.amountMinor / adults) : price.amountMinor,
     basis: price.basis,
   }));
-  const linkReproduced = link.currency === policy.currency && link.pricePerPersonMinor !== undefined && normalizedPrices.some((price) => Math.abs(price.amountMinor - link.pricePerPersonMinor!) <= 2_000);
-  const explicitPrice = normalizedPrices.find((price) => price.basis !== 'unknown' && price.amountMinor <= policy.maximumPricePerPersonMinor);
-  const pricePerPersonMinor = explicitPrice?.amountMinor ?? (linkReproduced ? link.pricePerPersonMinor : undefined);
+  const matrixPricePerPersonMinor = Math.round(itinerary.fare.total.amountMinor / adults);
+  const referencePrice = link.currency === policy.currency && link.pricePerPersonMinor !== undefined ? link.pricePerPersonMinor : matrixPricePerPersonMinor;
+  const explicitPrice = normalizedPrices
+    .filter((price) => price.basis !== 'unknown')
+    .sort((left, right) => Math.abs(left.amountMinor - referencePrice) - Math.abs(right.amountMinor - referencePrice))[0];
+  const reproducedPrice = normalizedPrices.find((price) => Math.abs(price.amountMinor - referencePrice) <= 2_000);
+  const pricePerPersonMinor = explicitPrice?.amountMinor ?? reproducedPrice?.amountMinor;
   const priceConfirmed = pricePerPersonMinor !== undefined && pricePerPersonMinor <= policy.maximumPricePerPersonMinor;
   if (priceConfirmed) matchedRules.push('retailer price');
   else if (originalCurrencyPrices.length) failedRules.push('retailer price');

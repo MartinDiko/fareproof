@@ -34,8 +34,15 @@ describe('Retailer validation', () => {
   it('rejects a retailer reprice above the maximum', () => {
     const result = validateRetailerObservation(policy, itinerary, link, { ...observation, prices: [{ amountMinor: 250_000, currency: 'CAD', basis: 'per-person' }], blocker: 'price-changed' });
 
-    expect(result).toMatchObject({ classification: 'mismatch', alertEligible: false });
+    expect(result).toMatchObject({ classification: 'mismatch', alertEligible: false, pricePerPersonMinor: 250_000 });
     expect(result.failedRules).toEqual(expect.arrayContaining(['retailer price', 'retailer price-changed']));
+  });
+
+  it('uses the agency price when it differs from the Matrix and BookWithMatrix amounts', () => {
+    const result = validateRetailerObservation(policy, itinerary, link, { ...observation, prices: [{ amountMinor: 150_000, currency: 'CAD', basis: 'per-person' }] });
+
+    expect(result).toMatchObject({ classification: 'exact', alertEligible: true, pricePerPersonMinor: 150_000 });
+    expect(result.matchedRules).toContain('retailer price');
   });
 
   it('rejects a different route', () => {
@@ -43,6 +50,22 @@ describe('Retailer validation', () => {
 
     expect(result).toMatchObject({ classification: 'mismatch', alertEligible: false });
     expect(result.failedRules).toContain('retailer route');
+  });
+
+  it('waits for route evidence when the retailer shell is still loading', () => {
+    const result = validateRetailerObservation(policy, itinerary, link, { ...observation, airportCodes: [], flightNumbers: [], flightCabinEvidence: [], dateTokens: [], prices: [] });
+
+    expect(result).toMatchObject({ classification: 'possible', alertEligible: false });
+    expect(result.missingRules).toEqual(expect.arrayContaining(['retailer route', 'retailer flight identity', 'retailer travel date', 'retailer long-leg cabin', 'retailer price']));
+    expect(result.failedRules).toEqual([]);
+  });
+
+  it('waits when a progressive agency page has rendered only the origin', () => {
+    const result = validateRetailerObservation(policy, itinerary, link, { ...observation, airportCodes: ['YVR', 'CAD'], flightNumbers: [], flightCabinEvidence: [], dateTokens: [], prices: [] });
+
+    expect(result).toMatchObject({ classification: 'possible', alertEligible: false });
+    expect(result.missingRules).toContain('retailer route');
+    expect(result.failedRules).toEqual([]);
   });
 
   it('does not alert when the date or long-leg cabin is unrelated', () => {

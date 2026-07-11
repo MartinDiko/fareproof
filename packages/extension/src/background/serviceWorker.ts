@@ -40,6 +40,7 @@ const MAX_OBSERVATIONS = 200;
 const DEFAULT_NOTIFICATIONS: NotificationSettings = { browserEnabled: true };
 const CANADIAN_AIRPORTS = new Set(['YVR', 'YYC', 'YEG', 'YXE', 'YWG', 'YQR', 'YYZ', 'YTZ', 'YOW', 'YUL', 'YQB', 'YHZ', 'YQM', 'YYT']);
 const RETAILER_HOST_SUFFIXES = ['justfly.com', 'flightnetwork.com', 'priceline.com', 'aa.com', 'delta.com', 'alaskaair.com', 'onetravel.com', 'anrdoezrs.net', 'westjet.com', 'condor.com'];
+const RETAILER_VALIDATION_RULES = ['retailer route', 'retailer flight identity', 'retailer travel date', 'retailer long-leg cabin', 'retailer price'];
 
 interface StartRunResult {
   started: boolean;
@@ -153,7 +154,42 @@ async function recordObservation(observation: PolicyObservation): Promise<void> 
   const result = await chrome.storage.local.get(STORAGE_KEYS.observations);
   const parsed = policyObservationSchema.array().safeParse(result[STORAGE_KEYS.observations]);
   const observations = parsed.success ? parsed.data : [];
-  await chrome.storage.local.set({ [STORAGE_KEYS.observations]: [policyObservationSchema.parse(observation), ...observations].slice(0, MAX_OBSERVATIONS) });
+  const validated = policyObservationSchema.parse(observation);
+  await chrome.storage.local.set({ [STORAGE_KEYS.observations]: [validated, ...observations.filter((item) => item.id !== validated.id)].slice(0, MAX_OBSERVATIONS) });
+}
+
+function matrixPricePerPerson(itinerary: ObservedItinerary): number {
+  return Math.round(itinerary.fare.total.amountMinor / Math.max(1, itinerary.passengers.adults));
+}
+
+function retailerObservationId(run: ActiveVerificationRun): string {
+  return `observation-${run.id}-retailer-${run.retailerIndex}`;
+}
+
+async function recordRetailerAttemptIfMissing(run: ActiveVerificationRun, message: string): Promise<void> {
+  const retailer = run.retailerQueue[run.retailerIndex];
+  const task = run.tasks[run.taskIndex];
+  if (!retailer || !task || !run.matrixItinerary) return;
+  const id = retailerObservationId(run);
+  const result = await chrome.storage.local.get(STORAGE_KEYS.observations);
+  const parsed = policyObservationSchema.array().safeParse(result[STORAGE_KEYS.observations]);
+  if (parsed.success && parsed.data.some((item) => item.id === id)) return;
+  const matrixPrice = matrixPricePerPerson(run.matrixItinerary);
+  await recordObservation({
+    id,
+    policyId: task.policyId,
+    observedAt: new Date().toISOString(),
+    stage: 'manual-confirmation-required',
+    itinerary: { ...run.matrixItinerary, sourceSite: retailer.site, sourceUrl: retailer.url, verificationStage: 'manual-confirmation-required' },
+    url: retailer.url,
+    retailer: retailer.site,
+    pricePerPersonMinor: matrixPrice,
+    bookWithMatrixPricePerPersonMinor: retailer.currency === run.matrixItinerary.fare.total.currency ? retailer.pricePerPersonMinor : undefined,
+    matchedRules: [],
+    missingRules: RETAILER_VALIDATION_RULES,
+    failedRules: [],
+    message,
+  });
 }
 
 function nextDueAt(policy: FareSearchPolicy): string {
@@ -299,6 +335,7 @@ async function advanceCandidate(run: ActiveVerificationRun, message: string): Pr
 }
 
 async function advanceRetailer(run: ActiveVerificationRun, message: string): Promise<void> {
+  await recordRetailerAttemptIfMissing(run, message);
   const retailerIndex = run.retailerIndex + 1;
   const retailer = run.retailerQueue[retailerIndex];
   if (!retailer) {
@@ -314,6 +351,9 @@ async function advanceRetailer(run: ActiveVerificationRun, message: string): Pro
   }
   const next = { ...run, retailerIndex, stage: 'retailer' as const, stageAttempt: 0 };
   await saveRun(next);
+  const task = run.tasks[run.taskIndex];
+  const previous = run.retailerQueue[run.retailerIndex];
+  if (task) await updateStatus(task.policyId, { state: 'running', message: `${previous?.site ?? 'The previous agency'} did not validate the fare. Checking ${retailer.site}'s current booking price.` });
   if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: retailer.url, active: run.interactive });
 }
 
@@ -430,14 +470,33 @@ function isKnownRetailer(url: string): boolean {
 async function handleBookWithMatrixResults(message: Extract<ExtensionMessage, { type: 'BOOKWITHMATRIX_RESULTS' }>, run: ActiveVerificationRun): Promise<void> {
   if (run.stage !== 'bookwithmatrix' || !run.matrixItinerary) return;
   const links = message.links.filter((link) => isKnownRetailer(link.url)).slice(0, 6);
-  await recordObservation({ id: `observation-${Date.now()}`, policyId: run.tasks[run.taskIndex]!.policyId, observedAt: new Date().toISOString(), stage: 'bookwithmatrix-handoff', itinerary: run.matrixItinerary, url: message.resultUrl, pricePerPersonMinor: Math.round(run.matrixItinerary.fare.total.amountMinor / run.matrixItinerary.passengers.adults), matchedRules: ['BookWithMatrix itinerary accepted'], missingRules: links.length ? [] : ['supported retailer link'] });
   const first = links[0];
+  const task = run.tasks[run.taskIndex]!;
+  const matrixPrice = matrixPricePerPerson(run.matrixItinerary);
+  const handoffMessage = first
+    ? `BookWithMatrix produced ${links.length} agency link${links.length === 1 ? '' : 's'}. Checking ${first.site}'s current booking price.`
+    : 'BookWithMatrix did not produce a supported agency link, so no real-world booking price could be checked.';
+  await recordObservation({
+    id: `observation-${run.id}-bookwithmatrix`,
+    policyId: task.policyId,
+    observedAt: new Date().toISOString(),
+    stage: 'bookwithmatrix-handoff',
+    itinerary: run.matrixItinerary,
+    url: message.resultUrl,
+    pricePerPersonMinor: matrixPrice,
+    bookWithMatrixPricePerPersonMinor: first?.currency === run.matrixItinerary.fare.total.currency ? first.pricePerPersonMinor : undefined,
+    matchedRules: links.length ? ['agency booking links found'] : [],
+    missingRules: links.length ? RETAILER_VALIDATION_RULES : ['supported agency booking link'],
+    failedRules: [],
+    message: handoffMessage,
+  });
   if (!first) {
     await advanceRetailer({ ...run, bookWithMatrixUrl: message.resultUrl, retailerQueue: [], retailerIndex: 0 }, 'BookWithMatrix returned no supported retailer link.');
     return;
   }
   const next = { ...run, stage: 'retailer' as const, stageAttempt: 0, bookWithMatrixUrl: message.resultUrl, retailerQueue: links, retailerIndex: 0 };
   await saveRun(next);
+  await updateStatus(task.policyId, { state: 'running', message: handoffMessage, bestPricePerPersonMinor: matrixPrice, bestUrl: message.resultUrl });
   if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: first.url, active: run.interactive });
 }
 
@@ -476,19 +535,37 @@ async function handleRetailerPage(message: Extract<ExtensionMessage, { type: 'RE
   const link = run.retailerQueue[run.retailerIndex] as BookWithMatrixResultLink | undefined;
   if (!policy || !link || !run.matrixItinerary || run.stage !== 'retailer') return;
   const verdict = validateRetailerObservation(policy, run.matrixItinerary, link, message.observation);
+  const matrixPrice = matrixPricePerPerson(run.matrixItinerary);
+  const agencyPrice = verdict.pricePerPersonMinor;
+  const detail = `Agency evidence ${verdict.classification === 'mismatch' ? 'failed' : 'incomplete'}: ${[...verdict.failedRules, ...verdict.missingRules].join(', ')}.`;
+  const agencyPriceText = agencyPrice === undefined ? 'No stable agency price is visible yet.' : `${link.site} shows ${policy.currency} ${(agencyPrice / 100).toFixed(2)} per person; Matrix showed ${policy.currency} ${(matrixPrice / 100).toFixed(2)}.`;
+  await recordObservation({
+    id: retailerObservationId(run),
+    policyId: policy.id,
+    observedAt: new Date().toISOString(),
+    stage: verdict.alertEligible ? 'retailer-result-reproduced' : 'manual-confirmation-required',
+    itinerary: { ...run.matrixItinerary, sourceSite: link.site, sourceUrl: message.observation.url, verificationStage: verdict.alertEligible ? 'retailer-result-reproduced' : 'manual-confirmation-required' },
+    url: message.observation.url,
+    retailer: link.site,
+    pricePerPersonMinor: agencyPrice ?? matrixPrice,
+    bookWithMatrixPricePerPersonMinor: link.currency === policy.currency ? link.pricePerPersonMinor : undefined,
+    retailerPricePerPersonMinor: agencyPrice,
+    matchedRules: verdict.matchedRules,
+    missingRules: verdict.missingRules,
+    failedRules: verdict.failedRules,
+    message: verdict.alertEligible ? `${agencyPriceText} The agency route, date, flight, cabin, and price passed validation.` : `${agencyPriceText} ${detail}`,
+  });
   if (!verdict.alertEligible) {
-    const detail = `Retailer evidence incomplete: ${[...verdict.failedRules, ...verdict.missingRules].join(', ')}.`;
     if (verdict.classification === 'mismatch') await advanceRetailer(run, detail);
     else {
-      await updateStatus(policy.id, { state: 'running', message: `${detail} Waiting briefly for the page to finish loading.` });
+      await updateStatus(policy.id, { state: 'running', message: `${agencyPriceText} ${detail} Waiting briefly for the page to finish loading.` });
       await saveRun(run);
     }
     return;
   }
   const price = verdict.pricePerPersonMinor!;
-  await recordObservation({ id: `observation-${Date.now()}`, policyId: policy.id, observedAt: new Date().toISOString(), stage: 'retailer-result-reproduced', itinerary: { ...run.matrixItinerary, sourceSite: link.site, sourceUrl: message.observation.url, verificationStage: 'retailer-result-reproduced' }, url: message.observation.url, retailer: link.site, pricePerPersonMinor: price, matchedRules: verdict.matchedRules, missingRules: [] });
-  await updateStatus(policy.id, { state: 'retailer-match', message: `${link.site} reproduced the route, date, flight, cabin, and price.`, bestPricePerPersonMinor: price, bestUrl: message.observation.url });
-  await sendAlert(policy, 'FareProof: retailer-validated fare found', `${policy.name}: ${policy.currency} ${(price / 100).toFixed(2)} per person at ${link.site}. Route, travel date, flight identity, long-leg cabin, and price were reproduced.`, message.observation.url, price, true);
+  await updateStatus(policy.id, { state: 'retailer-match', message: `${link.site} confirms ${policy.currency} ${(price / 100).toFixed(2)} per person; Matrix showed ${policy.currency} ${(matrixPrice / 100).toFixed(2)}.`, bestPricePerPersonMinor: price, bestUrl: message.observation.url });
+  await sendAlert(policy, 'FareProof: agency-validated fare found', `${policy.name}: ${policy.currency} ${(price / 100).toFixed(2)} per person at ${link.site}; Matrix showed ${policy.currency} ${(matrixPrice / 100).toFixed(2)}. Route, travel date, flight identity, long-leg cabin, and agency price were reproduced.`, message.observation.url, price, true);
   await advanceTask(run, 'Retailer-validated match found.', 'retailer-match');
 }
 

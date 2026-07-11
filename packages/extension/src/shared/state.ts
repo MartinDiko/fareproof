@@ -82,8 +82,12 @@ export const policyObservationSchema = z.object({
   url: z.string(),
   retailer: z.string().optional(),
   pricePerPersonMinor: z.number().int().nonnegative(),
+  bookWithMatrixPricePerPersonMinor: z.number().int().nonnegative().optional(),
+  retailerPricePerPersonMinor: z.number().int().nonnegative().optional(),
   matchedRules: z.array(z.string()),
   missingRules: z.array(z.string()),
+  failedRules: z.array(z.string()).optional(),
+  message: z.string().optional(),
 });
 
 export const extensionSettingsSchema = z.object({

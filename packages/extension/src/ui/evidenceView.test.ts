@@ -71,4 +71,30 @@ describe('buildFareEvidenceView', () => {
 
     expect(buildFareEvidenceView(itinerary, observation, defaultFareSearchPolicies)).toMatchObject({ stageLabel: 'Agency price did not qualify', perPersonMinor: 250_000, bookingUrl: undefined, reviewUrl: 'https://www.onetravel.com/book', failedRules: ['retailer price'] });
   });
+
+  it('preserves the USD quote beside its CAD policy value', () => {
+    const observation: PolicyObservation = {
+      id: 'usd-result',
+      policyId: 'fare-1-yvr-fra-one-way',
+      observedAt: '2026-07-10T12:30:00Z',
+      stage: 'retailer-result-reproduced',
+      itinerary: { ...itinerary, sourceSite: 'OneTravel', sourceUrl: 'https://www.onetravel.com/book' },
+      url: 'https://www.onetravel.com/book',
+      retailer: 'OneTravel',
+      pricePerPersonMinor: 141_460,
+      bookWithMatrixPricePerPersonMinor: 99_000,
+      bookWithMatrixCurrency: 'USD',
+      bookWithMatrixCadPricePerPersonMinor: 140_045,
+      retailerPricePerPersonMinor: 141_460,
+      retailerOriginalPricePerPersonMinor: 100_000,
+      retailerOriginalCurrency: 'USD',
+      usdToCadRate: 1.4146,
+      exchangeRateDate: '2026-07-10',
+      matchedRules: ['retailer route', 'retailer travel date', 'retailer flight identity', 'retailer long-leg cabin', 'retailer price'],
+      missingRules: [],
+      failedRules: [],
+    };
+
+    expect(buildFareEvidenceView(observation.itinerary, observation, defaultFareSearchPolicies)).toMatchObject({ perPersonMinor: 141_460, retailerOriginalPricePerPersonMinor: 100_000, retailerOriginalCurrency: 'USD', bookWithMatrixCadPricePerPersonMinor: 140_045, usdToCadRate: 1.4146, exchangeRateDate: '2026-07-10' });
+  });
 });

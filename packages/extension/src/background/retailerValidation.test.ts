@@ -45,6 +45,35 @@ describe('Retailer validation', () => {
     expect(result.matchedRules).toContain('retailer price');
   });
 
+  it('converts an agency USD price to CAD before applying the policy limit', () => {
+    const result = validateRetailerObservation(policy, itinerary, { ...link, pricePerPersonMinor: 100_000, currency: 'USD' }, {
+      ...observation,
+      prices: [{ amountMinor: 100_000, currency: 'USD', basis: 'per-person' }],
+    }, 1.4146);
+
+    expect(result).toMatchObject({ classification: 'exact', alertEligible: true, pricePerPersonMinor: 141_460, originalPricePerPersonMinor: 100_000, originalCurrency: 'USD', usdToCadRate: 1.4146 });
+  });
+
+  it('keeps USD pricing pending when no CAD exchange rate is available', () => {
+    const result = validateRetailerObservation(policy, itinerary, link, {
+      ...observation,
+      prices: [{ amountMinor: 100_000, currency: 'USD', basis: 'per-person' }],
+    });
+
+    expect(result).toMatchObject({ classification: 'possible', alertEligible: false, pricePerPersonMinor: undefined });
+    expect(result.missingRules).toEqual(expect.arrayContaining(['retailer price', 'USD to CAD exchange rate']));
+  });
+
+  it('identifies an unsupported agency currency instead of silently dropping it', () => {
+    const result = validateRetailerObservation(policy, itinerary, link, {
+      ...observation,
+      prices: [{ amountMinor: 90_000, currency: 'EUR', basis: 'per-person' }],
+    });
+
+    expect(result).toMatchObject({ classification: 'possible', alertEligible: false });
+    expect(result.missingRules).toContain('unsupported agency currency: EUR');
+  });
+
   it('rejects a different route', () => {
     const result = validateRetailerObservation(policy, itinerary, link, { ...observation, airportCodes: ['YVR', 'LHR'] });
 

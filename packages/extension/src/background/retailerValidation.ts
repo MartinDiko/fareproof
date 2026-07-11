@@ -1,10 +1,14 @@
 import type { FareSearchPolicy, ObservedItinerary } from '@fareproof/core';
 import type { BookWithMatrixResultLink, RetailerPageObservation } from '../shared/messages';
+import { convertUsdToCad } from './exchangeRates';
 
 export interface RetailerValidationResult {
   classification: 'exact' | 'possible' | 'mismatch';
   alertEligible: boolean;
   pricePerPersonMinor?: number;
+  originalPricePerPersonMinor?: number;
+  originalCurrency?: string;
+  usdToCadRate?: number;
   matchedRules: string[];
   missingRules: string[];
   failedRules: string[];
@@ -26,6 +30,7 @@ export function validateRetailerObservation(
   itinerary: ObservedItinerary,
   link: BookWithMatrixResultLink,
   observation: RetailerPageObservation,
+  usdToCadRate?: number,
 ): RetailerValidationResult {
   const matchedRules: string[] = [];
   const missingRules: string[] = [];
@@ -63,25 +68,51 @@ export function validateRetailerObservation(
   (cabinConfirmed ? matchedRules : missingRules).push('retailer long-leg cabin');
 
   const adults = Math.max(1, itinerary.passengers.adults);
-  const originalCurrencyPrices = observation.prices.filter((price) => price.currency === policy.currency);
-  const normalizedPrices = originalCurrencyPrices.map((price) => ({
-    amountMinor: price.basis === 'total' ? Math.round(price.amountMinor / adults) : price.amountMinor,
-    basis: price.basis,
-  }));
+  const normalizedPrices = observation.prices.flatMap((price) => {
+    const originalAmountMinor = price.basis === 'total' ? Math.round(price.amountMinor / adults) : price.amountMinor;
+    if (price.currency === policy.currency) return [{ amountMinor: originalAmountMinor, originalAmountMinor, originalCurrency: price.currency, basis: price.basis }];
+    if (price.currency === 'USD' && policy.currency === 'CAD' && usdToCadRate !== undefined) {
+      return [{ amountMinor: convertUsdToCad(originalAmountMinor, usdToCadRate), originalAmountMinor, originalCurrency: price.currency, basis: price.basis }];
+    }
+    return [];
+  });
   const matrixPricePerPersonMinor = Math.round(itinerary.fare.total.amountMinor / adults);
-  const referencePrice = link.currency === policy.currency && link.pricePerPersonMinor !== undefined ? link.pricePerPersonMinor : matrixPricePerPersonMinor;
+  const linkPriceInPolicyCurrency = link.pricePerPersonMinor === undefined
+    ? undefined
+    : link.currency === policy.currency
+      ? link.pricePerPersonMinor
+      : link.currency === 'USD' && policy.currency === 'CAD' && usdToCadRate !== undefined
+        ? convertUsdToCad(link.pricePerPersonMinor, usdToCadRate)
+        : undefined;
+  const referencePrice = linkPriceInPolicyCurrency ?? matrixPricePerPersonMinor;
   const explicitPrice = normalizedPrices
     .filter((price) => price.basis !== 'unknown')
     .sort((left, right) => Math.abs(left.amountMinor - referencePrice) - Math.abs(right.amountMinor - referencePrice))[0];
   const reproducedPrice = normalizedPrices.find((price) => Math.abs(price.amountMinor - referencePrice) <= 2_000);
-  const pricePerPersonMinor = explicitPrice?.amountMinor ?? reproducedPrice?.amountMinor;
+  const selectedPrice = explicitPrice ?? reproducedPrice;
+  const pricePerPersonMinor = selectedPrice?.amountMinor;
   const priceConfirmed = pricePerPersonMinor !== undefined && pricePerPersonMinor <= policy.maximumPricePerPersonMinor;
   if (priceConfirmed) matchedRules.push('retailer price');
-  else if (originalCurrencyPrices.length) failedRules.push('retailer price');
-  else missingRules.push('retailer price');
+  else if (normalizedPrices.length) failedRules.push('retailer price');
+  else {
+    missingRules.push('retailer price');
+    if (observation.prices.some((price) => price.currency === 'USD') && policy.currency === 'CAD' && usdToCadRate === undefined) missingRules.push('USD to CAD exchange rate');
+    const unsupportedCurrencies = [...new Set(observation.prices.map((price) => price.currency).filter((currency) => currency !== policy.currency && currency !== 'USD'))];
+    if (unsupportedCurrencies.length) missingRules.push(`unsupported agency currency: ${unsupportedCurrencies.join('/')}`);
+  }
 
   if (observation.blocker) failedRules.push(`retailer ${observation.blocker}`);
   const alertEligible = failedRules.length === 0 && missingRules.length === 0;
   const classification = alertEligible ? 'exact' : failedRules.length ? 'mismatch' : 'possible';
-  return { classification, alertEligible, pricePerPersonMinor, matchedRules, missingRules, failedRules };
+  return {
+    classification,
+    alertEligible,
+    pricePerPersonMinor,
+    originalPricePerPersonMinor: selectedPrice?.originalAmountMinor,
+    originalCurrency: selectedPrice?.originalCurrency,
+    usdToCadRate: selectedPrice?.originalCurrency === 'USD' ? usdToCadRate : undefined,
+    matchedRules,
+    missingRules,
+    failedRules,
+  };
 }

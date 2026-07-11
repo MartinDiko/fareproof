@@ -12,7 +12,13 @@ export interface FareEvidenceView {
   perPersonMinor: number;
   matrixPricePerPersonMinor: number;
   bookWithMatrixPricePerPersonMinor?: number;
+  bookWithMatrixCurrency?: string;
+  bookWithMatrixCadPricePerPersonMinor?: number;
   retailerPricePerPersonMinor?: number;
+  retailerOriginalPricePerPersonMinor?: number;
+  retailerOriginalCurrency?: string;
+  usdToCadRate?: number;
+  exchangeRateDate?: string;
   priceDifferenceMinor?: number;
   currency: string;
   passengers: number;
@@ -107,7 +113,14 @@ export function buildFareEvidenceView(
     perPersonMinor,
     matrixPricePerPersonMinor,
     bookWithMatrixPricePerPersonMinor: observation?.bookWithMatrixPricePerPersonMinor,
+    bookWithMatrixCurrency: observation?.bookWithMatrixCurrency ?? (observation?.bookWithMatrixPricePerPersonMinor !== undefined ? itinerary.fare.total.currency : undefined),
+    bookWithMatrixCadPricePerPersonMinor: observation?.bookWithMatrixCadPricePerPersonMinor
+      ?? (observation?.bookWithMatrixCurrency === undefined || observation.bookWithMatrixCurrency === 'CAD' ? observation?.bookWithMatrixPricePerPersonMinor : undefined),
     retailerPricePerPersonMinor,
+    retailerOriginalPricePerPersonMinor: observation?.retailerOriginalPricePerPersonMinor,
+    retailerOriginalCurrency: observation?.retailerOriginalCurrency,
+    usdToCadRate: observation?.usdToCadRate,
+    exchangeRateDate: observation?.exchangeRateDate,
     priceDifferenceMinor: retailerPricePerPersonMinor === undefined ? undefined : retailerPricePerPersonMinor - matrixPricePerPersonMinor,
     currency: itinerary.fare.total.currency,
     passengers,

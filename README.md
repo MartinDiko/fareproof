@@ -13,6 +13,8 @@ The loadable Manifest V3 extension now implements the browser workflow in [promp
 - Deterministic validation of route, travel date, passenger count, original-currency per-person price, per-direction stops, connection country, segment duration, mixed cabin, and 30–45-day return window.
 - BookWithMatrix handoff through its visible paste workflow and independent agency links. BookWithMatrix acceptance is a pending handoff, not fare validation; FareProof opens each supported agency result and waits for progressively rendered itinerary and price evidence.
 - Conservative agency validation using the agency page's current price as the source of truth even when it differs from Matrix or BookWithMatrix. The panel compares all available prices, persists incomplete and failed agency attempts, and enables the booking link only when the agency reproduces route, travel date, flight identity, long-leg cabin tied to the long-haul flight, and an original-currency price at or below the policy limit.
+- Durable run history records every manual and scheduled verification started after version 0.2.5, with aggregate and per-policy outcomes, duration, agency, booking URL, original price, CAD price, and exchange-rate metadata.
+- USD agency and BookWithMatrix prices are converted to CAD with a validated Bank of Canada daily rate before CAD policy limits are applied. The original USD amount, CAD equivalent, rate, and effective date remain visible.
 - Deduplicated Chrome desktop notifications with **Open match** and **Open FareProof** actions. Optional mobile push uses a user-generated ntfy topic and optional `ntfy.sh` host permission; no mobile data leaves the browser unless explicitly configured.
 - Local policy status, observations, alert history, scheduler state, manual import of normalized FareProof data, compact fares, or Matrix's copied itinerary JSON, watch export, and a Shadow DOM Matrix overlay.
 - A password-gated static React reporting app for GitHub Pages with local persistence, compact fare import, extension-bundle import, watch filtering, marketing/operating identity reporting, dark/light themes, deletion, and export.
@@ -42,6 +44,8 @@ flowchart LR
 ```
 
 The core is intentionally pure and deterministic. Browser access and storage remain at client boundaries. The static web app cannot inspect airfare websites and does not pretend otherwise.
+
+See [docs/architecture.md](docs/architecture.md) for the detailed component model, run state machine, message and storage contracts, currency conversion, trust boundaries, deployment, tests, and current limitations.
 
 ## Requirements
 

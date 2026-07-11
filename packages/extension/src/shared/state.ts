@@ -9,6 +9,8 @@ export const STORAGE_KEYS = {
   dateCursors: 'fareproof.dateCursors',
   notificationSettings: 'fareproof.notificationSettings',
   alertLinks: 'fareproof.alertLinks',
+  usdCadRate: 'fareproof.usdCadRate',
+  runHistory: 'fareproof.runHistory',
 } as const;
 
 export const policyStatusSchema = z.object({
@@ -83,11 +85,45 @@ export const policyObservationSchema = z.object({
   retailer: z.string().optional(),
   pricePerPersonMinor: z.number().int().nonnegative(),
   bookWithMatrixPricePerPersonMinor: z.number().int().nonnegative().optional(),
+  bookWithMatrixCurrency: z.string().optional(),
+  bookWithMatrixCadPricePerPersonMinor: z.number().int().nonnegative().optional(),
   retailerPricePerPersonMinor: z.number().int().nonnegative().optional(),
+  retailerOriginalPricePerPersonMinor: z.number().int().nonnegative().optional(),
+  retailerOriginalCurrency: z.string().optional(),
+  usdToCadRate: z.number().positive().optional(),
+  exchangeRateDate: z.string().optional(),
   matchedRules: z.array(z.string()),
   missingRules: z.array(z.string()),
   failedRules: z.array(z.string()).optional(),
   message: z.string().optional(),
+});
+
+const runPolicyOutcomeSchema = z.enum(['queued', 'not-run', 'match', 'no-match', 'manual-review', 'matrix-unavailable', 'cancelled', 'failed']);
+
+export const runHistoryEntrySchema = z.object({
+  id: z.string(),
+  startedAt: z.string(),
+  completedAt: z.string().optional(),
+  trigger: z.enum(['manual', 'scheduled']),
+  outcome: z.enum(['running', 'match', 'no-match', 'manual-review', 'matrix-unavailable', 'cancelled', 'failed']),
+  stage: activeVerificationRunSchema.shape.stage.optional(),
+  taskCount: z.number().int().nonnegative(),
+  policyCount: z.number().int().nonnegative(),
+  summary: z.string(),
+  results: z.array(z.object({
+    policyId: z.string(),
+    policyName: z.string(),
+    route: z.string(),
+    outcome: runPolicyOutcomeSchema,
+    message: z.string(),
+    agency: z.string().optional(),
+    bookingUrl: z.string().url().optional(),
+    cadPricePerPersonMinor: z.number().int().nonnegative().optional(),
+    originalPricePerPersonMinor: z.number().int().nonnegative().optional(),
+    originalCurrency: z.string().optional(),
+    usdToCadRate: z.number().positive().optional(),
+    exchangeRateDate: z.string().optional(),
+  })),
 });
 
 export const extensionSettingsSchema = z.object({
@@ -101,3 +137,10 @@ export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
 export type ActiveVerificationRun = z.infer<typeof activeVerificationRunSchema>;
 export type PolicyObservation = z.infer<typeof policyObservationSchema>;
 export type RetailerLink = z.infer<typeof retailerLinkSchema>;
+export type RunHistoryEntry = z.infer<typeof runHistoryEntrySchema>;
+
+export function migratePolicyStatus(status: PolicyStatus): PolicyStatus {
+  const isLegacyMatrixOutage = status.state === 'error'
+    && status.message.includes('ITA Matrix did not return fare data after two attempts');
+  return isLegacyMatrixOutage ? policyStatusSchema.parse({ ...status, state: 'blocked' }) : status;
+}

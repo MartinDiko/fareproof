@@ -4,11 +4,12 @@ export default defineManifest({
   manifest_version: 3,
   name: 'FareProof',
   description: 'Capture airfare evidence and compare whether the same itinerary remains available.',
-  version: '0.2.4',
+  version: '0.2.5',
   permissions: ['storage', 'alarms', 'notifications', 'tabs', 'scripting', 'sidePanel'],
   host_permissions: [
     'https://matrix.itasoftware.com/*',
     'https://bookwithmatrix.com/*',
+    'https://www.bankofcanada.ca/valet/observations/FXUSDCAD/*',
     'https://*.justfly.com/*',
     'https://*.flightnetwork.com/*',
     'https://*.priceline.com/*',

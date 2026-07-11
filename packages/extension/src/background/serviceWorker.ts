@@ -12,17 +12,21 @@ import {
 import { extensionMessageSchema, type BookWithMatrixResultLink, type ExtensionMessage } from '../shared/messages';
 import {
   activeVerificationRunSchema,
+  migratePolicyStatus,
   notificationSettingsSchema,
   policyObservationSchema,
   policyStatusSchema,
+  runHistoryEntrySchema,
   STORAGE_KEYS,
   type ActiveVerificationRun,
   type NotificationSettings,
   type PolicyObservation,
   type PolicyStatus,
+  type RunHistoryEntry,
 } from '../shared/state';
 import { validateRetailerObservation } from './retailerValidation';
 import { rankMatrixFlightCandidates } from './matrixCandidateRanking';
+import { convertUsdToCad, getUsdCadRate, type UsdCadRate } from './exchangeRates';
 
 const WATCHES_KEY = 'fareproof.watches';
 const CURRENT_OBSERVATION_KEY = 'fareproof.currentObservation';
@@ -81,6 +85,104 @@ async function getRun(): Promise<ActiveVerificationRun | null> {
   return parsed.success ? parsed.data : null;
 }
 
+async function getRunHistory(): Promise<RunHistoryEntry[]> {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.runHistory);
+  const parsed = runHistoryEntrySchema.array().safeParse(result[STORAGE_KEYS.runHistory]);
+  return parsed.success ? parsed.data : [];
+}
+
+async function upsertRunHistory(entry: RunHistoryEntry): Promise<void> {
+  const history = await getRunHistory();
+  const validated = runHistoryEntrySchema.parse(entry);
+  await chrome.storage.local.set({ [STORAGE_KEYS.runHistory]: [validated, ...history.filter((item) => item.id !== validated.id)] });
+}
+
+function policyRoute(policy: FareSearchPolicy): string {
+  return `${policy.origins.join('/')} → ${policy.destinations.join('/')}`;
+}
+
+function historyOutcomeForStatus(status?: PolicyStatus): RunHistoryEntry['results'][number]['outcome'] {
+  if (status?.state === 'retailer-match') return 'match';
+  if (status?.state === 'manual-action-required') return 'manual-review';
+  if (status?.state === 'blocked') return 'matrix-unavailable';
+  if (status?.state === 'error') return 'failed';
+  if (status?.state === 'no-match') return 'no-match';
+  return 'not-run';
+}
+
+async function startRunHistory(run: ActiveVerificationRun, policies: FareSearchPolicy[]): Promise<void> {
+  const selected = policies.filter((policy) => run.policyIds.includes(policy.id));
+  await upsertRunHistory({
+    id: run.id,
+    startedAt: run.startedAt,
+    trigger: run.interactive ? 'manual' : 'scheduled',
+    outcome: 'running',
+    stage: run.stage,
+    taskCount: run.tasks.length,
+    policyCount: selected.length,
+    summary: `Checking ${selected.length} ${selected.length === 1 ? 'search' : 'searches'} through Matrix, BookWithMatrix, and supported agencies.`,
+    results: selected.map((policy) => ({ policyId: policy.id, policyName: policy.name, route: policyRoute(policy), outcome: 'queued', message: 'Queued for this run.' })),
+  });
+}
+
+async function completeRunHistory(
+  run: ActiveVerificationRun,
+  forcedOutcome?: Exclude<RunHistoryEntry['outcome'], 'running'>,
+  summary?: string,
+): Promise<void> {
+  const [history, policies, statuses, observationResult] = await Promise.all([
+    getRunHistory(),
+    getPolicies(),
+    getStatuses(),
+    chrome.storage.local.get(STORAGE_KEYS.observations),
+  ]);
+  const existing = history.find((item) => item.id === run.id);
+  const parsedObservations = policyObservationSchema.array().safeParse(observationResult[STORAGE_KEYS.observations]);
+  const observations = (parsedObservations.success ? parsedObservations.data : []).filter((item) => run.policyIds.includes(item.policyId) && Date.parse(item.observedAt) >= Date.parse(run.startedAt));
+  const results = run.policyIds.flatMap((policyId) => {
+    const policy = policies.find((item) => item.id === policyId);
+    if (!policy) return [];
+    const status = statuses.find((item) => item.policyId === policyId);
+    const observation = observations.find((item) => item.policyId === policyId);
+    const outcome = forcedOutcome === 'matrix-unavailable' ? 'matrix-unavailable' : historyOutcomeForStatus(status);
+    return [{
+      policyId,
+      policyName: policy.name,
+      route: policyRoute(policy),
+      outcome,
+      message: status?.message ?? summary ?? 'Run completed.',
+      agency: observation?.retailer,
+      bookingUrl: observation?.stage === 'retailer-result-reproduced' && observation.url.startsWith('https://') ? observation.url : undefined,
+      cadPricePerPersonMinor: observation?.retailerPricePerPersonMinor ?? observation?.pricePerPersonMinor,
+      originalPricePerPersonMinor: observation?.retailerOriginalPricePerPersonMinor,
+      originalCurrency: observation?.retailerOriginalCurrency,
+      usdToCadRate: observation?.usdToCadRate,
+      exchangeRateDate: observation?.exchangeRateDate,
+    }];
+  });
+  const derivedOutcome: Exclude<RunHistoryEntry['outcome'], 'running'> = results.some((item) => item.outcome === 'match')
+    ? 'match'
+    : results.some((item) => item.outcome === 'manual-review')
+      ? 'manual-review'
+      : results.some((item) => item.outcome === 'failed')
+        ? 'failed'
+        : results.every((item) => item.outcome === 'matrix-unavailable')
+          ? 'matrix-unavailable'
+          : 'no-match';
+  await upsertRunHistory({
+    id: run.id,
+    startedAt: run.startedAt,
+    completedAt: new Date().toISOString(),
+    trigger: run.interactive ? 'manual' : 'scheduled',
+    outcome: forcedOutcome ?? derivedOutcome,
+    stage: run.stage,
+    taskCount: run.tasks.length,
+    policyCount: run.policyIds.length,
+    summary: summary ?? existing?.summary ?? 'Run completed.',
+    results,
+  });
+}
+
 async function saveRun(run: ActiveVerificationRun | null): Promise<void> {
   if (!run) {
     await chrome.storage.local.set({ [STORAGE_KEYS.activeRun]: null });
@@ -101,17 +203,19 @@ async function recoverScheduler(): Promise<{ recovered: boolean; run: ActiveVeri
   if (tabExists && Number.isFinite(ageMs) && ageMs <= maximumAgeMs) return { recovered: false, run };
 
   const policies = await getPolicies();
+  const currentPolicyId = run.tasks[run.taskIndex]?.policyId;
   for (const policyId of run.policyIds) {
     const policy = policies.find((item) => item.id === policyId);
     if (!policy) continue;
     await updateStatus(policyId, {
-      state: 'error',
+      state: policyId === currentPolicyId ? tabExists ? 'error' : 'manual-action-required' : 'scheduled',
       lastCompletedAt: new Date().toISOString(),
       message: tabExists
-        ? 'The previous verification expired before it completed. Check now is available again.'
-        : 'The previous verification tab no longer exists. Check now is available again.',
+        ? policyId === currentPolicyId ? 'The previous verification expired before it completed. Check now is available again.' : 'Not checked because the previous run expired.'
+        : policyId === currentPolicyId ? 'The verification tab was closed before this search completed.' : 'Not checked because the verification tab was closed.',
     });
   }
+  await completeRunHistory(run, tabExists ? 'failed' : 'cancelled', tabExists ? 'The run expired before completion.' : 'The verification tab was closed before the run completed.');
   await saveRun(null);
   return { recovered: true, run: null };
 }
@@ -136,7 +240,10 @@ async function ensureDefaults(): Promise<void> {
   const notificationResult = await chrome.storage.local.get(STORAGE_KEYS.notificationSettings);
   const notifications = notificationSettingsSchema.safeParse(notificationResult[STORAGE_KEYS.notificationSettings]);
   const now = new Date().toISOString();
-  const nextStatuses = policies.map((policy) => statuses.find((status) => status.policyId === policy.id) ?? policyStatusSchema.parse({ policyId: policy.id, state: 'scheduled', nextDueAt: now, message: 'Ready for the first check.' }));
+  const nextStatuses = policies.map((policy) => {
+    const existing = statuses.find((status) => status.policyId === policy.id);
+    return existing ? migratePolicyStatus(existing) : policyStatusSchema.parse({ policyId: policy.id, state: 'scheduled', nextDueAt: now, message: 'Ready for the first check.' });
+  });
   await chrome.storage.local.set({
     [STORAGE_KEYS.policies]: policies,
     [STORAGE_KEYS.statuses]: nextStatuses,
@@ -162,6 +269,17 @@ function matrixPricePerPerson(itinerary: ObservedItinerary): number {
   return Math.round(itinerary.fare.total.amountMinor / Math.max(1, itinerary.passengers.adults));
 }
 
+function cadPrice(amountMinor: number | undefined, currency: string | undefined, rate: UsdCadRate | null): number | undefined {
+  if (amountMinor === undefined) return undefined;
+  if (currency === 'CAD') return amountMinor;
+  if (currency === 'USD' && rate) return convertUsdToCad(amountMinor, rate.usdToCad);
+  return undefined;
+}
+
+async function rateForCurrencies(currencies: Array<string | undefined>): Promise<UsdCadRate | null> {
+  return currencies.includes('USD') ? getUsdCadRate() : null;
+}
+
 function retailerObservationId(run: ActiveVerificationRun): string {
   return `observation-${run.id}-retailer-${run.retailerIndex}`;
 }
@@ -175,6 +293,7 @@ async function recordRetailerAttemptIfMissing(run: ActiveVerificationRun, messag
   const parsed = policyObservationSchema.array().safeParse(result[STORAGE_KEYS.observations]);
   if (parsed.success && parsed.data.some((item) => item.id === id)) return;
   const matrixPrice = matrixPricePerPerson(run.matrixItinerary);
+  const rate = await rateForCurrencies([retailer.currency]);
   await recordObservation({
     id,
     policyId: task.policyId,
@@ -184,7 +303,11 @@ async function recordRetailerAttemptIfMissing(run: ActiveVerificationRun, messag
     url: retailer.url,
     retailer: retailer.site,
     pricePerPersonMinor: matrixPrice,
-    bookWithMatrixPricePerPersonMinor: retailer.currency === run.matrixItinerary.fare.total.currency ? retailer.pricePerPersonMinor : undefined,
+    bookWithMatrixPricePerPersonMinor: retailer.pricePerPersonMinor,
+    bookWithMatrixCurrency: retailer.currency,
+    bookWithMatrixCadPricePerPersonMinor: cadPrice(retailer.pricePerPersonMinor, retailer.currency, rate),
+    usdToCadRate: rate?.usdToCad,
+    exchangeRateDate: rate?.effectiveDate,
     matchedRules: [],
     missingRules: RETAILER_VALIDATION_RULES,
     failedRules: [],
@@ -204,12 +327,13 @@ async function startRun(policyIds?: string[], interactive = false): Promise<Star
   const tasks = selected.flatMap(buildMatrixSearchTasks);
   const first = tasks[0];
   if (!first) return { started: false, reason: 'No enabled search policy was available to run.' };
+  const firstPolicyId = first.policyId;
   for (const policy of selected) {
-    await updateStatus(policy.id, { state: 'running', lastAttemptAt: new Date().toISOString(), nextDueAt: nextDueAt(policy), message: 'Initializing the ITA Matrix browser session.' });
+    await updateStatus(policy.id, { state: policy.id === firstPolicyId ? 'running' : 'scheduled', lastAttemptAt: new Date().toISOString(), nextDueAt: nextDueAt(policy), message: policy.id === firstPolicyId ? 'Initializing the ITA Matrix browser session.' : 'Queued in the current verification run.' });
   }
   const tab = await chrome.tabs.create({ url: 'about:blank', active: interactive });
   const now = new Date().toISOString();
-  await saveRun({
+  const run = activeVerificationRunSchema.parse({
     id: `run-${Date.now()}`,
     startedAt: now,
     updatedAt: now,
@@ -227,6 +351,8 @@ async function startRun(policyIds?: string[], interactive = false): Promise<Star
     retailerIndex: 0,
     policyIds: selected.map((policy) => policy.id),
   });
+  await saveRun(run);
+  await startRunHistory(run, selected);
   if (tab.id !== undefined) await chrome.tabs.update(tab.id, { url: 'https://matrix.itasoftware.com/search', active: interactive });
   return { started: true };
 }
@@ -254,8 +380,9 @@ async function finishRun(run: ActiveVerificationRun): Promise<void> {
       message: status?.state === 'retailer-match' || status?.state === 'manual-action-required' ? status.message : 'No retailer-validated match in this cycle.',
     });
   }
-  if (!run.interactive && run.tabId !== undefined) await chrome.tabs.remove(run.tabId).catch(() => undefined);
+  await completeRunHistory(run, undefined, 'All queued searches completed.');
   await saveRun(null);
+  if (!run.interactive && run.tabId !== undefined) await chrome.tabs.remove(run.tabId).catch(() => undefined);
 }
 
 async function failMatrixRun(run: ActiveVerificationRun, message: string): Promise<void> {
@@ -264,14 +391,15 @@ async function failMatrixRun(run: ActiveVerificationRun, message: string): Promi
     const policy = policies.find((item) => item.id === policyId);
     if (!policy) continue;
     await updateStatus(policy.id, {
-      state: 'error',
+      state: 'blocked',
       lastCompletedAt: new Date().toISOString(),
       nextDueAt: nextDueAt(policy),
       message,
     });
   }
-  if (!run.interactive && run.tabId !== undefined) await chrome.tabs.remove(run.tabId).catch(() => undefined);
+  await completeRunHistory(run, 'matrix-unavailable', message);
   await saveRun(null);
+  if (!run.interactive && run.tabId !== undefined) await chrome.tabs.remove(run.tabId).catch(() => undefined);
 }
 
 async function retryMatrixCalendar(run: ActiveVerificationRun): Promise<void> {
@@ -319,6 +447,8 @@ async function advanceTask(run: ActiveVerificationRun, message: string, state: P
     retailerIndex: 0,
   };
   await saveRun(next);
+  const nextPolicy = policies.find((item) => item.id === nextTask.policyId);
+  if (nextPolicy) await updateStatus(nextPolicy.id, { state: 'running', lastAttemptAt: new Date().toISOString(), message: 'Starting the next queued Matrix search.' });
   if (run.tabId !== undefined) await chrome.tabs.update(run.tabId, { url: 'https://matrix.itasoftware.com/search', active: run.interactive });
 }
 
@@ -473,6 +603,7 @@ async function handleBookWithMatrixResults(message: Extract<ExtensionMessage, { 
   const first = links[0];
   const task = run.tasks[run.taskIndex]!;
   const matrixPrice = matrixPricePerPerson(run.matrixItinerary);
+  const rate = await rateForCurrencies(links.map((link) => link.currency));
   const handoffMessage = first
     ? `BookWithMatrix produced ${links.length} agency link${links.length === 1 ? '' : 's'}. Checking ${first.site}'s current booking price.`
     : 'BookWithMatrix did not produce a supported agency link, so no real-world booking price could be checked.';
@@ -484,7 +615,11 @@ async function handleBookWithMatrixResults(message: Extract<ExtensionMessage, { 
     itinerary: run.matrixItinerary,
     url: message.resultUrl,
     pricePerPersonMinor: matrixPrice,
-    bookWithMatrixPricePerPersonMinor: first?.currency === run.matrixItinerary.fare.total.currency ? first.pricePerPersonMinor : undefined,
+    bookWithMatrixPricePerPersonMinor: first?.pricePerPersonMinor,
+    bookWithMatrixCurrency: first?.currency,
+    bookWithMatrixCadPricePerPersonMinor: cadPrice(first?.pricePerPersonMinor, first?.currency, rate),
+    usdToCadRate: rate?.usdToCad,
+    exchangeRateDate: rate?.effectiveDate,
     matchedRules: links.length ? ['agency booking links found'] : [],
     missingRules: links.length ? RETAILER_VALIDATION_RULES : ['supported agency booking link'],
     failedRules: [],
@@ -534,11 +669,16 @@ async function handleRetailerPage(message: Extract<ExtensionMessage, { type: 'RE
   const policy = policyForRun(run, policies);
   const link = run.retailerQueue[run.retailerIndex] as BookWithMatrixResultLink | undefined;
   if (!policy || !link || !run.matrixItinerary || run.stage !== 'retailer') return;
-  const verdict = validateRetailerObservation(policy, run.matrixItinerary, link, message.observation);
+  const rate = await rateForCurrencies([link.currency, ...message.observation.prices.map((price) => price.currency)]);
+  const verdict = validateRetailerObservation(policy, run.matrixItinerary, link, message.observation, rate?.usdToCad);
   const matrixPrice = matrixPricePerPerson(run.matrixItinerary);
   const agencyPrice = verdict.pricePerPersonMinor;
   const detail = `Agency evidence ${verdict.classification === 'mismatch' ? 'failed' : 'incomplete'}: ${[...verdict.failedRules, ...verdict.missingRules].join(', ')}.`;
-  const agencyPriceText = agencyPrice === undefined ? 'No stable agency price is visible yet.' : `${link.site} shows ${policy.currency} ${(agencyPrice / 100).toFixed(2)} per person; Matrix showed ${policy.currency} ${(matrixPrice / 100).toFixed(2)}.`;
+  const originalAgencyPrice = verdict.originalPricePerPersonMinor;
+  const agencyQuote = originalAgencyPrice !== undefined && verdict.originalCurrency
+    ? `${verdict.originalCurrency} ${(originalAgencyPrice / 100).toFixed(2)}${verdict.originalCurrency === 'USD' && agencyPrice !== undefined ? ` = CAD ${(agencyPrice / 100).toFixed(2)} at ${rate?.usdToCad.toFixed(4)}` : ''}`
+    : agencyPrice !== undefined ? `${policy.currency} ${(agencyPrice / 100).toFixed(2)}` : undefined;
+  const agencyPriceText = agencyQuote === undefined ? 'No stable agency price is visible yet.' : `${link.site} shows ${agencyQuote} per person; Matrix showed ${policy.currency} ${(matrixPrice / 100).toFixed(2)}.`;
   await recordObservation({
     id: retailerObservationId(run),
     policyId: policy.id,
@@ -548,8 +688,14 @@ async function handleRetailerPage(message: Extract<ExtensionMessage, { type: 'RE
     url: message.observation.url,
     retailer: link.site,
     pricePerPersonMinor: agencyPrice ?? matrixPrice,
-    bookWithMatrixPricePerPersonMinor: link.currency === policy.currency ? link.pricePerPersonMinor : undefined,
+    bookWithMatrixPricePerPersonMinor: link.pricePerPersonMinor,
+    bookWithMatrixCurrency: link.currency,
+    bookWithMatrixCadPricePerPersonMinor: cadPrice(link.pricePerPersonMinor, link.currency, rate),
     retailerPricePerPersonMinor: agencyPrice,
+    retailerOriginalPricePerPersonMinor: verdict.originalPricePerPersonMinor,
+    retailerOriginalCurrency: verdict.originalCurrency,
+    usdToCadRate: verdict.usdToCadRate,
+    exchangeRateDate: verdict.usdToCadRate ? rate?.effectiveDate : undefined,
     matchedRules: verdict.matchedRules,
     missingRules: verdict.missingRules,
     failedRules: verdict.failedRules,
@@ -564,8 +710,8 @@ async function handleRetailerPage(message: Extract<ExtensionMessage, { type: 'RE
     return;
   }
   const price = verdict.pricePerPersonMinor!;
-  await updateStatus(policy.id, { state: 'retailer-match', message: `${link.site} confirms ${policy.currency} ${(price / 100).toFixed(2)} per person; Matrix showed ${policy.currency} ${(matrixPrice / 100).toFixed(2)}.`, bestPricePerPersonMinor: price, bestUrl: message.observation.url });
-  await sendAlert(policy, 'FareProof: agency-validated fare found', `${policy.name}: ${policy.currency} ${(price / 100).toFixed(2)} per person at ${link.site}; Matrix showed ${policy.currency} ${(matrixPrice / 100).toFixed(2)}. Route, travel date, flight identity, long-leg cabin, and agency price were reproduced.`, message.observation.url, price, true);
+  await updateStatus(policy.id, { state: 'retailer-match', message: `${link.site} confirms ${agencyQuote ?? `${policy.currency} ${(price / 100).toFixed(2)}`} per person; Matrix showed ${policy.currency} ${(matrixPrice / 100).toFixed(2)}.`, bestPricePerPersonMinor: price, bestUrl: message.observation.url });
+  await sendAlert(policy, 'FareProof: agency-validated fare found', `${policy.name}: ${agencyQuote ?? `${policy.currency} ${(price / 100).toFixed(2)}`} per person at ${link.site}; Matrix showed ${policy.currency} ${(matrixPrice / 100).toFixed(2)}. Route, travel date, flight identity, long-leg cabin, and agency price were reproduced.`, message.observation.url, price, true);
   await advanceTask(run, 'Retailer-validated match found.', 'retailer-match');
 }
 
@@ -690,6 +836,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     const policies = await getPolicies();
     const policy = policyForRun(run, policies);
     if (policy) await updateStatus(policy.id, { state: 'manual-action-required', message: 'Verification tab was closed before the check completed.' });
+    for (const policyId of run.policyIds.filter((item) => item !== policy?.id)) {
+      await updateStatus(policyId, { state: 'scheduled', message: 'Not checked because the verification tab was closed.' });
+    }
+    await completeRunHistory(run, 'cancelled', 'The verification tab was closed before the run completed.');
     await saveRun(null);
   });
 });

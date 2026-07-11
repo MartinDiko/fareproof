@@ -33,7 +33,7 @@ function matrixSearchPage(): string {
 }
 
 function retailerLoadingThenPricePage(): string {
-  const fixture = readFileSync(path.join(fixtures, 'retailer-result.html'), 'utf8').replace('CAD 1,318.42 per person', 'CAD 1,500.00 per person');
+  const fixture = readFileSync(path.join(fixtures, 'retailer-result.html'), 'utf8').replace('CAD 1,318.42 per person', 'USD 1,000.00 per person');
   const resultBody = /<body>([\s\S]*)<\/body>/.exec(fixture)?.[1] ?? fixture;
   return `<!doctype html><html><head><title>Checking fare</title></head><body><main>Checking current agency price...</main><script>setTimeout(() => { document.body.innerHTML = ${JSON.stringify(resultBody)}; }, 2_200);</script></body></html>`;
 }
@@ -47,6 +47,7 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
   });
   try {
     let calendarRequests = 0;
+    let matrixUnavailable = false;
     const routeMatrix = async (route: Route) => {
       if (route.request().resourceType() !== 'document') {
         await route.continue();
@@ -55,7 +56,7 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
       const pathname = new URL(route.request().url()).pathname;
       if (pathname === '/calendar') {
         calendarRequests += 1;
-        await route.fulfill({ contentType: 'text/html', body: calendarRequests === 1 ? '<!doctype html><html><body><div role="progressbar">Loading Matrix</div></body></html>' : matrixCalendarPage() });
+        await route.fulfill({ contentType: 'text/html', body: matrixUnavailable || calendarRequests === 1 ? '<!doctype html><html><body><div role="progressbar">Loading Matrix</div></body></html>' : matrixCalendarPage() });
       }
       else if (pathname === '/flights') await route.fulfill({ contentType: 'text/html', body: readFileSync(path.join(fixtures, 'matrix-calendar.html'), 'utf8') });
       else if (pathname === '/itinerary') await route.fulfill({ contentType: 'text/html', body: matrixItineraryPage() });
@@ -82,6 +83,7 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
     await serviceWorker.evaluate(async () => {
       const oldTimestamp = new Date(Date.now() - 10 * 60_000).toISOString();
       await chrome.storage.local.set({
+        'fareproof.usdCadRate': { usdToCad: 1.4146, effectiveDate: '2026-07-10', fetchedAt: new Date().toISOString(), source: 'Bank of Canada' },
         'fareproof.activeVerificationRun': {
           id: 'stale-installed-run',
           startedAt: oldTimestamp,
@@ -109,7 +111,7 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
     });
     await page.setViewportSize({ width: 420, height: 900 });
     await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-    await expect(page.getByText('Fare 1 · YVR to FRA one way')).toBeVisible();
+    await expect(page.locator('.policy-card').filter({ hasText: 'Fare 1 · YVR to FRA one way' })).toBeVisible();
     await expect.poll(async () => page.evaluate(async () => (await chrome.storage.local.get('fareproof.activeVerificationRun'))['fareproof.activeVerificationRun'])).toBeNull();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(420);
     await page.getByLabel('Fare JSON').fill(matrixFixture);
@@ -151,16 +153,18 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
       return { state: status?.state, message: status?.message, stage: stored['fareproof.activeVerificationRun']?.stage };
     }), { timeout: 45_000 }).toMatchObject({ state: 'retailer-match' });
     await expect(policy.getByText('retailer match')).toBeVisible();
-    await expect(policy.getByText(/OneTravel confirms CAD 1500\.00 per person; Matrix showed CAD 1313\.67/)).toBeVisible();
+    await expect(policy.getByText(/OneTravel confirms USD 1000\.00 = CAD 1414\.60 at 1\.4146 per person; Matrix showed CAD 1313\.67/)).toBeVisible();
     await expect(evidencePanel.locator('.evidence-stage')).toHaveText('Agency price validated');
     await expect(evidencePanel.getByText('YVR → FRA', { exact: true })).toBeVisible();
     await expect(evidencePanel.getByText('2026-09-17 · BUSINESS', { exact: true })).toBeVisible();
     await expect(evidencePanel.getByText('Fare 1 · YVR to FRA one way', { exact: true })).toBeVisible();
-    await expect(evidencePanel.getByText(/1,500\.00/)).toBeVisible();
+    await expect(evidencePanel.getByText(/1,000\.00/)).toBeVisible();
+    await expect(evidencePanel.locator('.evidence-grid > div').filter({ hasText: 'OneTravel / person' }).getByText('CA$1,414.60', { exact: true })).toBeVisible();
     await expect(evidencePanel.getByText(/1,318\.42/)).toBeVisible();
     await expect(evidencePanel.getByText(/1,313\.67/)).toBeVisible();
-    await expect(evidencePanel.getByText(/186\.33 above Matrix/)).toBeVisible();
-    await expect(evidencePanel.getByText(/3,000\.00/)).toBeVisible();
+    await expect(evidencePanel.getByText(/100\.93 above Matrix/)).toBeVisible();
+    await expect(evidencePanel.getByText(/2,829\.20/)).toBeVisible();
+    await expect(evidencePanel.getByText(/1 USD = 1\.4146 CAD/)).toBeVisible();
     await expect(evidencePanel.getByText(/WS 5943 operated by DE 2455/)).toBeVisible();
     await expect(evidencePanel.getByText(/DZ0D0HNS/)).toBeVisible();
     await expect(evidencePanel.getByText('OneTravel', { exact: true })).toBeVisible();
@@ -172,16 +176,50 @@ test('runs Matrix through BookWithMatrix and validates the retailer', async () =
     await expect(confirmedRules).toContainText('agency price');
     const bookingLink = evidencePanel.getByRole('link', { name: /Open booking site · OneTravel/ });
     await expect(bookingLink).toHaveAttribute('href', /https:\/\/www\.onetravel\.com\//);
-    const stored = await page.evaluate(async () => chrome.storage.local.get(['fareproof.policyObservations', 'fareproof.activeVerificationRun']));
+    const stored = await page.evaluate(async () => chrome.storage.local.get(['fareproof.policyObservations', 'fareproof.activeVerificationRun', 'fareproof.runHistory']));
     expect(stored['fareproof.policyObservations']).toEqual(expect.arrayContaining([
-      expect.objectContaining({ policyId: 'fare-1-yvr-fra-one-way', stage: 'retailer-result-reproduced', retailer: 'OneTravel', pricePerPersonMinor: 150_000, retailerPricePerPersonMinor: 150_000, bookWithMatrixPricePerPersonMinor: 131_842 }),
+      expect.objectContaining({ policyId: 'fare-1-yvr-fra-one-way', stage: 'retailer-result-reproduced', retailer: 'OneTravel', pricePerPersonMinor: 141_460, retailerPricePerPersonMinor: 141_460, retailerOriginalPricePerPersonMinor: 100_000, retailerOriginalCurrency: 'USD', usdToCadRate: 1.4146, bookWithMatrixPricePerPersonMinor: 131_842 }),
       expect.objectContaining({ policyId: 'fare-1-yvr-fra-one-way', stage: 'bookwithmatrix-handoff', matchedRules: ['agency booking links found'], missingRules: expect.arrayContaining(['retailer price']) }),
     ]));
+    expect(stored['fareproof.runHistory']).toEqual(expect.arrayContaining([expect.objectContaining({ outcome: 'match', results: expect.arrayContaining([expect.objectContaining({ policyId: 'fare-1-yvr-fra-one-way', outcome: 'match', originalPricePerPersonMinor: 100_000, originalCurrency: 'USD', cadPricePerPersonMinor: 141_460, usdToCadRate: 1.4146 })]) })]));
+    const matchedRun = page.locator('.history-run').filter({ hasText: 'Agency match' }).first();
+    await expect(matchedRun).toBeVisible();
+    await matchedRun.locator('summary').click();
+    await expect(matchedRun.getByText(/US\$1,000\.00.*CA\$1,414\.60/)).toBeVisible();
     expect(stored['fareproof.activeVerificationRun']).toBeNull();
     expect(calendarRequests).toBe(2);
     const notifications = await page.evaluate(async () => chrome.notifications.getAll());
     expect(notifications).toHaveProperty('fareproof-fare-1-yvr-fra-one-way');
     expect(consoleErrors).toEqual([]);
+
+    matrixUnavailable = true;
+    const unavailablePagePromise = context.waitForEvent('page');
+    await page.getByRole('button', { name: 'Check all enabled searches now' }).click();
+    const unavailablePage = await unavailablePagePromise;
+    await unavailablePage.route('https://matrix.itasoftware.com/**', routeMatrix);
+    await unavailablePage.goto('https://matrix.itasoftware.com/search');
+    await expect.poll(async () => page.evaluate(async () => (await chrome.storage.local.get('fareproof.activeVerificationRun'))['fareproof.activeVerificationRun']?.stage)).toBe('calendar');
+    await page.evaluate(async () => chrome.alarms.create('fareproof.run-timeout', { when: Date.now() + 100 }));
+    await expect.poll(async () => page.evaluate(async () => {
+      const run = (await chrome.storage.local.get('fareproof.activeVerificationRun'))['fareproof.activeVerificationRun'];
+      return { stage: run?.stage, attempt: run?.stageAttempt };
+    }), { timeout: 10_000 }).toEqual({ stage: 'calendar', attempt: 1 });
+    await page.evaluate(async () => chrome.alarms.create('fareproof.run-timeout', { when: Date.now() + 100 }));
+    await expect.poll(async () => page.evaluate(async () => {
+      const stored = await chrome.storage.local.get(['fareproof.activeVerificationRun', 'fareproof.policyStatuses', 'fareproof.runHistory']);
+      return {
+        activeRun: stored['fareproof.activeVerificationRun'],
+        blocked: stored['fareproof.policyStatuses']?.filter((status: { state: string }) => status.state === 'blocked').length,
+        error: stored['fareproof.policyStatuses']?.filter((status: { state: string }) => status.state === 'error').length,
+        historyOutcome: stored['fareproof.runHistory']?.[0]?.outcome,
+        historyResults: stored['fareproof.runHistory']?.[0]?.results?.length,
+      };
+    }), { timeout: 10_000 }).toEqual({ activeRun: null, blocked: 5, error: 0, historyOutcome: 'matrix-unavailable', historyResults: 5 });
+    await expect(page.getByText('Matrix unavailable for the latest run')).toBeVisible();
+    await expect(page.locator('.policy-card .status').filter({ hasText: 'Matrix unavailable' })).toHaveCount(5);
+    await expect(page.locator('.policy-card .status.danger')).toHaveCount(0);
+    await unavailablePage.close();
+    matrixUnavailable = false;
 
     const scheduledPagePromise = context.waitForEvent('page');
     await page.evaluate(async () => {

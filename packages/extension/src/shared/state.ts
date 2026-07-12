@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { fareSearchPolicySchema, observedItinerarySchema } from '@fareproof/core';
+import { fareSearchPolicySchema, fareWatchSchema, observedItinerarySchema } from '@fareproof/core';
 
 export const STORAGE_KEYS = {
   policies: 'fareproof.searchPolicies',
@@ -11,7 +11,21 @@ export const STORAGE_KEYS = {
   alertLinks: 'fareproof.alertLinks',
   usdCadRate: 'fareproof.usdCadRate',
   runHistory: 'fareproof.runHistory',
+  apiSearchSettings: 'fareproof.apiSearchSettings',
+  apiCandidates: 'fareproof.apiCandidates',
 } as const;
+
+/**
+ * Optional, user-configured flight-price API discovery. Disabled by default and
+ * inert unless the user enables it and supplies their own provider token; the
+ * token and results stay in local storage. Mirrors the opt-in ntfy.sh pattern.
+ */
+export const apiSearchSettingsSchema = z.object({
+  provider: z.literal('travelpayouts').default('travelpayouts'),
+  enabled: z.boolean().default(false),
+  token: z.string().max(200).optional(),
+  market: z.string().regex(/^[a-z]{2}$/).optional(),
+});
 
 export const policyStatusSchema = z.object({
   policyId: z.string(),
@@ -132,8 +146,11 @@ export const extensionSettingsSchema = z.object({
   notificationSettings: notificationSettingsSchema,
 });
 
+export const apiCandidatesSchema = z.array(fareWatchSchema);
+
 export type PolicyStatus = z.infer<typeof policyStatusSchema>;
 export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
+export type ApiSearchSettings = z.infer<typeof apiSearchSettingsSchema>;
 export type ActiveVerificationRun = z.infer<typeof activeVerificationRunSchema>;
 export type PolicyObservation = z.infer<typeof policyObservationSchema>;
 export type RetailerLink = z.infer<typeof retailerLinkSchema>;

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Bell, Download, ExternalLink, FileJson, Plane, Settings, ShieldCheck } from 'lucide-react';
 import { fareSearchPolicySchema, parseImportedFare, type FareProofExport, type FareSearchPolicy, type FareWatch, type ObservedItinerary } from '@fareproof/core';
-import { policyObservationSchema, STORAGE_KEYS, type PolicyObservation } from '../shared/state';
+import { apiCandidatesSchema, policyObservationSchema, STORAGE_KEYS, type PolicyObservation } from '../shared/state';
 import { FareEvidencePanel } from './FareEvidencePanel';
 import { PolicyDashboard } from './PolicyDashboard';
 import { RunHistory } from './RunHistory';
@@ -24,6 +24,7 @@ function WatchCard({ watch }: { watch: FareWatch }) {
 
 function SidePanel() {
   const [watches, setWatches] = useState<FareWatch[]>([]);
+  const [apiCandidates, setApiCandidates] = useState<FareWatch[]>([]);
   const [current, setCurrent] = useState<ObservedItinerary | null>(null);
   const [observations, setObservations] = useState<PolicyObservation[]>([]);
   const [policies, setPolicies] = useState<FareSearchPolicy[]>([]);
@@ -31,13 +32,15 @@ function SidePanel() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    const load = () => chrome.storage.local.get([WATCHES_KEY, CURRENT_OBSERVATION_KEY, STORAGE_KEYS.observations, STORAGE_KEYS.policies]).then((result) => {
+    const load = () => chrome.storage.local.get([WATCHES_KEY, CURRENT_OBSERVATION_KEY, STORAGE_KEYS.observations, STORAGE_KEYS.policies, STORAGE_KEYS.apiCandidates]).then((result) => {
       setWatches(Array.isArray(result[WATCHES_KEY]) ? result[WATCHES_KEY] as FareWatch[] : []);
       setCurrent(result[CURRENT_OBSERVATION_KEY] as ObservedItinerary | undefined ?? null);
       const parsedObservations = policyObservationSchema.array().safeParse(result[STORAGE_KEYS.observations]);
       const parsedPolicies = fareSearchPolicySchema.array().safeParse(result[STORAGE_KEYS.policies]);
+      const parsedApiCandidates = apiCandidatesSchema.safeParse(result[STORAGE_KEYS.apiCandidates]);
       setObservations(parsedObservations.success ? parsedObservations.data : []);
       setPolicies(parsedPolicies.success ? parsedPolicies.data : []);
+      setApiCandidates(parsedApiCandidates.success ? parsedApiCandidates.data : []);
     });
     void load();
     const onChange = () => void load();
@@ -57,7 +60,9 @@ function SidePanel() {
   };
 
   const exportWatches = () => {
-    const bundle: FareProofExport = { schemaVersion: 1, exportedAt: new Date().toISOString(), watches };
+    const byId = new Map<string, FareWatch>();
+    for (const watch of [...watches, ...apiCandidates]) if (!byId.has(watch.id)) byId.set(watch.id, watch);
+    const bundle: FareProofExport = { schemaVersion: 1, exportedAt: new Date().toISOString(), watches: [...byId.values()] };
     const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' }));
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -69,7 +74,7 @@ function SidePanel() {
   const currentEvidence = latestEvidence(current, observations, policies);
   const validatedEvidence = latestValidatedEvidence(observations, policies);
 
-  return <main><header className="brand"><div className="brand-mark"><Plane size={20} /></div><div><h1>FareProof</h1><p>Local fare verification</p></div><button className="icon-button" title="Settings" onClick={() => chrome.runtime.openOptionsPage()}><Settings size={18} /></button></header><FareEvidencePanel current={currentEvidence} latestValidated={validatedEvidence} /><RunHistory /><PolicyDashboard /><section><div className="section-title"><h2>Captured watches</h2><div className="watch-actions"><span>{watches.length}</span><button className="icon-button" type="button" title="Export watches" disabled={!watches.length} onClick={exportWatches}><Download size={16} /></button></div></div><div className="watch-list">{watches.length ? watches.map((watch) => <WatchCard key={watch.id} watch={watch} />) : <div className="empty"><Bell size={22} /><strong>No captured watches</strong><span>Scheduled policies are listed above. Manual captures appear here.</span></div>}</div></section><section><div className="section-title"><h2>Manual JSON import</h2><FileJson size={17} /></div><textarea value={json} onChange={(event) => setJson(event.target.value)} placeholder="Paste FareProof, Matrix copied JSON, or compact fare JSON" aria-label="Fare JSON" />{error && <p className="error" role="alert">{error}</p>}<button className="primary" type="button" disabled={!json.trim()} onClick={() => void importFare()}><FileJson size={16} /> Parse and create watch</button></section><footer><ShieldCheck size={15} /> Browser-only by default. Mobile push is opt-in.</footer></main>;
+  return <main><header className="brand"><div className="brand-mark"><Plane size={20} /></div><div><h1>FareProof</h1><p>Local fare verification</p></div><button className="icon-button" title="Settings" onClick={() => chrome.runtime.openOptionsPage()}><Settings size={18} /></button></header><FareEvidencePanel current={currentEvidence} latestValidated={validatedEvidence} /><RunHistory /><PolicyDashboard /><section><div className="section-title"><h2>Captured watches</h2><div className="watch-actions"><span>{watches.length}</span><button className="icon-button" type="button" title="Export watches and API candidates" disabled={!watches.length && !apiCandidates.length} onClick={exportWatches}><Download size={16} /></button></div></div><div className="watch-list">{watches.length ? watches.map((watch) => <WatchCard key={watch.id} watch={watch} />) : <div className="empty"><Bell size={22} /><strong>No captured watches</strong><span>Scheduled policies are listed above. Manual captures appear here.</span></div>}</div></section>{apiCandidates.length > 0 && <section><div className="section-title"><h2>API discovery candidates</h2><span>{apiCandidates.length}</span></div><p className="settings-copy">Indicative cached prices from the flight-price API. Verify on a retailer before booking. Included in export.</p><div className="watch-list">{apiCandidates.map((watch) => <WatchCard key={watch.id} watch={watch} />)}</div></section>}<section><div className="section-title"><h2>Manual JSON import</h2><FileJson size={17} /></div><textarea value={json} onChange={(event) => setJson(event.target.value)} placeholder="Paste FareProof, Matrix copied JSON, or compact fare JSON" aria-label="Fare JSON" />{error && <p className="error" role="alert">{error}</p>}<button className="primary" type="button" disabled={!json.trim()} onClick={() => void importFare()}><FileJson size={16} /> Parse and create watch</button></section><footer><ShieldCheck size={15} /> Browser-only by default. Mobile push is opt-in.</footer></main>;
 }
 
 function Popup() {

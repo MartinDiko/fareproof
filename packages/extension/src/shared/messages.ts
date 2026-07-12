@@ -47,6 +47,8 @@ export const extensionMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('RUN_POLICIES_NOW'), policyIds: z.array(z.string()).optional() }),
   z.object({ type: z.literal('RECOVER_SCHEDULER') }),
   z.object({ type: z.literal('SAVE_NOTIFICATION_SETTINGS'), browserEnabled: z.boolean(), ntfyTopic: z.string().optional() }),
+  z.object({ type: z.literal('SAVE_API_SEARCH_SETTINGS'), enabled: z.boolean(), token: z.string().optional(), market: z.string().optional() }),
+  z.object({ type: z.literal('RUN_API_SEARCH') }),
   z.object({ type: z.literal('TEST_NOTIFICATION') }),
   z.object({ type: z.literal('MATRIX_HOME_READY') }),
   z.object({ type: z.literal('MATRIX_FORM_FAILED'), reason: z.string().max(500) }),

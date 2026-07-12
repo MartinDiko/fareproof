@@ -21,7 +21,7 @@ export default defineManifest({
     'https://*.westjet.com/*',
     'https://*.condor.com/*',
   ],
-  optional_host_permissions: ['https://ntfy.sh/*'],
+  optional_host_permissions: ['https://ntfy.sh/*', 'https://api.travelpayouts.com/*'],
   icons: { '16': 'icon16.png', '32': 'icon32.png', '48': 'icon48.png', '128': 'icon128.png' },
   background: { service_worker: 'src/background/serviceWorker.ts', type: 'module' },
   action: { default_popup: 'popup.html', default_title: 'Open FareProof', default_icon: { '16': 'icon16.png', '32': 'icon32.png' } },

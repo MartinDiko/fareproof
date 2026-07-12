@@ -1,0 +1,44 @@
+{
+  "success": true,
+  "data": [
+    {
+      "origin": "YVR",
+      "destination": "FRA",
+      "origin_airport": "YVR",
+      "destination_airport": "FRA",
+      "price": 1284,
+      "airline": "LH",
+      "flight_number": 493,
+      "departure_at": "2026-09-03T13:35:00+02:00",
+      "transfers": 1,
+      "duration": 760,
+      "duration_to": 760,
+      "link": "/search/YVR0309FRA1?t=lh"
+    },
+    {
+      "origin": "YVR",
+      "destination": "FRA",
+      "origin_airport": "YVR",
+      "destination_airport": "FRA",
+      "price": 1499,
+      "airline": "AC",
+      "flight_number": "852",
+      "departure_at": "2026-09-11T18:05:00+02:00",
+      "transfers": 0,
+      "duration": 585,
+      "duration_to": 585,
+      "link": "/search/YVR1109FRA1?t=ac"
+    },
+    {
+      "origin": "YVR",
+      "destination": "FRA",
+      "price": 1210,
+      "airline": "",
+      "flight_number": null,
+      "departure_at": "2026-09-19T09:15:00+02:00",
+      "transfers": 1,
+      "duration": 900
+    }
+  ],
+  "currency": "cad"
+}

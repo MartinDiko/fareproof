@@ -12,6 +12,7 @@ import {
 import { extensionMessageSchema, type BookWithMatrixResultLink, type ExtensionMessage } from '../shared/messages';
 import {
   activeVerificationRunSchema,
+  apiSearchSettingsSchema,
   migratePolicyStatus,
   notificationSettingsSchema,
   policyObservationSchema,
@@ -27,10 +28,12 @@ import {
 import { validateRetailerObservation } from './retailerValidation';
 import { rankMatrixFlightCandidates } from './matrixCandidateRanking';
 import { convertUsdToCad, getUsdCadRate, type UsdCadRate } from './exchangeRates';
+import { getApiSearchSettings, runApiSearch } from './apiSearch';
 
 const WATCHES_KEY = 'fareproof.watches';
 const CURRENT_OBSERVATION_KEY = 'fareproof.currentObservation';
 const DISPATCH_ALARM = 'fareproof.dispatch';
+const API_SEARCH_ALARM = 'fareproof.api-search';
 const RUN_TIMEOUT_ALARM = 'fareproof.run-timeout';
 const RUN_TIMEOUT_BY_STAGE: Record<ActiveVerificationRun['stage'], number> = {
   'matrix-home': 20_000,
@@ -747,6 +750,16 @@ async function handleMessage(message: ExtensionMessage, sender: chrome.runtime.M
     await Promise.all([browserNotification('fareproof-test', 'FareProof test notification', 'Browser notifications are working.', 'https://matrix.itasoftware.com/'), mobileNotification('FareProof test notification', 'Mobile notifications are working.', 'https://matrix.itasoftware.com/')]);
     return { ok: true };
   }
+  if (message.type === 'SAVE_API_SEARCH_SETTINGS') {
+    const settings = apiSearchSettingsSchema.parse({ provider: 'travelpayouts', enabled: message.enabled, token: message.token || undefined, market: message.market || undefined });
+    await chrome.storage.local.set({ [STORAGE_KEYS.apiSearchSettings]: settings });
+    await ensureApiSearchAlarm();
+    return { ok: true };
+  }
+  if (message.type === 'RUN_API_SEARCH') {
+    const result = await runApiSearch();
+    return { ok: result.ok, count: result.count, reason: result.reason };
+  }
   const run = await getRun();
   if (!run || sender.tab?.id !== run.tabId) return { ok: false };
   if (message.type === 'MATRIX_HOME_READY' && run.stage === 'matrix-home') {
@@ -772,8 +785,15 @@ async function handleMessage(message: ExtensionMessage, sender: chrome.runtime.M
   return { ok: true };
 }
 
+async function ensureApiSearchAlarm(): Promise<void> {
+  const settings = await getApiSearchSettings();
+  if (settings.enabled && settings.token) await chrome.alarms.create(API_SEARCH_ALARM, { periodInMinutes: 30 });
+  else await chrome.alarms.clear(API_SEARCH_ALARM);
+}
+
 async function initializeExtension(): Promise<void> {
   await ensureDefaults();
+  await ensureApiSearchAlarm();
   await recoverScheduler();
 }
 
@@ -798,6 +818,7 @@ chrome.runtime.onMessage.addListener((rawMessage: unknown, sender, sendResponse)
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === DISPATCH_ALARM) void dispatchDuePolicies();
+  if (alarm.name === API_SEARCH_ALARM) void runApiSearch();
   if (alarm.name === RUN_TIMEOUT_ALARM) {
     void getRun().then((run) => {
       if (!run) return undefined;
